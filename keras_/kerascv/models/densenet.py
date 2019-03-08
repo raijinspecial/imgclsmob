@@ -6,122 +6,10 @@
 __all__ = ['densenet', 'densenet121', 'densenet161', 'densenet169', 'densenet201']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import conv2d, GluonBatchNormalization
-
-
-def dense_conv(x,
-               in_channels,
-               out_channels,
-               kernel_size,
-               strides,
-               padding,
-               name="dense_conv"):
-    """
-    DenseNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    name : str, default 'dense_conv'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor and preactivated input tensor.
-    """
-    x = GluonBatchNormalization(name=name + "/bn")(x)
-    x = nn.Activation("relu", name=name + "/activ")(x)
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=kernel_size,
-        strides=strides,
-        padding=padding,
-        use_bias=False,
-        name=name + "/conv")
-    return x
-
-
-def dense_conv1x1(x,
-                  in_channels,
-                  out_channels,
-                  name="dense_conv1x1"):
-    """
-    1x1 version of the DenseNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    name : str, default 'dense_conv1x1'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor and preactivated input tensor.
-    """
-    return dense_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        strides=1,
-        padding=0,
-        name=name)
-
-
-def dense_conv3x3(x,
-                  in_channels,
-                  out_channels,
-                  name="dense_conv3x3"):
-    """
-    3x3 version of the DenseNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    name : str, default 'dense_conv3x3'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor and preactivated input tensor.
-    """
-    return dense_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        strides=1,
-        padding=1,
-        name=name)
+from .common import pre_conv1x1_block, pre_conv3x3_block, is_channels_first, get_channel_axis, flatten
+from .preresnet import preres_init_block, preres_activation
 
 
 def dense_unit(x,
@@ -156,12 +44,12 @@ def dense_unit(x,
 
     identity = x
 
-    x = dense_conv1x1(
+    x = pre_conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=mid_channels,
         name=name + "/conv1")
-    x = dense_conv3x3(
+    x = pre_conv3x3_block(
         x=x,
         in_channels=mid_channels,
         out_channels=inc_channels,
@@ -173,8 +61,7 @@ def dense_unit(x,
             rate=dropout_rate,
             name=name + "dropout")(x)
 
-    channel_axis = 1 if K.image_data_format() == 'channels_first' else -1
-    x = nn.concatenate([identity, x], axis=channel_axis, name=name + "/concat")
+    x = nn.concatenate([identity, x], axis=get_channel_axis(), name=name + "/concat")
     return x
 
 
@@ -202,7 +89,7 @@ def transition_block(x,
     keras.backend tensor/variable/symbol
         Resulted tensor.
     """
-    x = dense_conv1x1(
+    x = pre_conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=out_channels,
@@ -212,70 +99,6 @@ def transition_block(x,
         strides=2,
         padding="valid",
         name=name + "/pool")(x)
-    return x
-
-
-def dense_init_block(x,
-                     in_channels,
-                     out_channels,
-                     name="dense_init_block"):
-    """
-    DenseNet specific initial block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    name : str, default 'dense_init_block'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=7,
-        strides=2,
-        padding=3,
-        use_bias=False,
-        name=name + "/conv")
-    x = GluonBatchNormalization(name=name + "/bn")(x)
-    x = nn.Activation("relu", name=name + "/activ")(x)
-    x = nn.MaxPool2D(
-        pool_size=3,
-        strides=2,
-        padding="same",
-        name=name + "/pool")(x)
-    return x
-
-
-def post_activation(x,
-                    name="post_activation"):
-    """
-    DenseNet final block, which performs the same function of postactivation as in PreResNet.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    name : str, default 'post_activation'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    x = GluonBatchNormalization(name=name + "/bn")(x)
-    x = nn.Activation("relu", name=name + "/activ")(x)
     return x
 
 
@@ -303,10 +126,10 @@ def densenet(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
-    x = dense_init_block(
+    x = preres_init_block(
         x=input,
         in_channels=in_channels,
         out_channels=init_block_channels,
@@ -328,7 +151,7 @@ def densenet(channels,
                 dropout_rate=dropout_rate,
                 name="features/stage{}/unit{}".format(i + 1, j + 1))
             in_channels = out_channels
-    x = post_activation(
+    x = preres_activation(
         x=x,
         name="features/post_activ")
     x = nn.AvgPool2D(
@@ -336,7 +159,8 @@ def densenet(channels,
         strides=1,
         name="features/final_pool")(x)
 
-    x = nn.Flatten()(x)
+    # x = nn.Flatten()(x)
+    x = flatten(x)
     x = nn.Dense(
         units=classes,
         input_dim=in_channels,
@@ -348,7 +172,7 @@ def densenet(channels,
     return model
 
 
-def get_densenet(num_layers,
+def get_densenet(blocks,
                  model_name=None,
                  pretrained=False,
                  root=os.path.join('~', '.keras', 'models'),
@@ -358,8 +182,8 @@ def get_densenet(num_layers,
 
     Parameters:
     ----------
-    num_layers : int
-        Number of layers.
+    blocks : int
+        Number of blocks.
     model_name : str or None, default None
         Model name for loading pretrained model.
     pretrained : bool, default False
@@ -368,24 +192,24 @@ def get_densenet(num_layers,
         Location for keeping the model parameters.
     """
 
-    if num_layers == 121:
+    if blocks == 121:
         init_block_channels = 64
         growth_rate = 32
         layers = [6, 12, 24, 16]
-    elif num_layers == 161:
+    elif blocks == 161:
         init_block_channels = 96
         growth_rate = 48
         layers = [6, 12, 36, 24]
-    elif num_layers == 169:
+    elif blocks == 169:
         init_block_channels = 64
         growth_rate = 32
         layers = [6, 12, 32, 32]
-    elif num_layers == 201:
+    elif blocks == 201:
         init_block_channels = 64
         growth_rate = 32
         layers = [6, 12, 48, 32]
     else:
-        raise ValueError("Unsupported DenseNet version with number of layers {}".format(num_layers))
+        raise ValueError("Unsupported DenseNet version with number of layers {}".format(blocks))
 
     from functools import reduce
     channels = reduce(lambda xi, yi:
@@ -404,11 +228,11 @@ def get_densenet(num_layers,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -424,7 +248,7 @@ def densenet121(**kwargs):
     root : str, default '~/.keras/models'
         Location for keeping the model parameters.
     """
-    return get_densenet(num_layers=121, model_name="densenet121", **kwargs)
+    return get_densenet(blocks=121, model_name="densenet121", **kwargs)
 
 
 def densenet161(**kwargs):
@@ -438,7 +262,7 @@ def densenet161(**kwargs):
     root : str, default '~/.keras/models'
         Location for keeping the model parameters.
     """
-    return get_densenet(num_layers=161, model_name="densenet161", **kwargs)
+    return get_densenet(blocks=161, model_name="densenet161", **kwargs)
 
 
 def densenet169(**kwargs):
@@ -452,7 +276,7 @@ def densenet169(**kwargs):
     root : str, default '~/.keras/models'
         Location for keeping the model parameters.
     """
-    return get_densenet(num_layers=169, model_name="densenet169", **kwargs)
+    return get_densenet(blocks=169, model_name="densenet169", **kwargs)
 
 
 def densenet201(**kwargs):
@@ -466,7 +290,7 @@ def densenet201(**kwargs):
     root : str, default '~/.keras/models'
         Location for keeping the model parameters.
     """
-    return get_densenet(num_layers=201, model_name="densenet201", **kwargs)
+    return get_densenet(blocks=201, model_name="densenet201", **kwargs)
 
 
 def _test():
@@ -493,7 +317,10 @@ def _test():
         assert (model != densenet169 or weight_count == 14149480)
         assert (model != densenet201 or weight_count == 20013928)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

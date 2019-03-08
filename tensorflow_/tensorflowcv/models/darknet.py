@@ -7,134 +7,16 @@ __all__ = ['DarkNet', 'darknet_ref', 'darknet_tiny', 'darknet19']
 
 import os
 import tensorflow as tf
-from .common import conv2d, batchnorm, maxpool2d
-
-
-def dark_conv(x,
-              in_channels,
-              out_channels,
-              kernel_size,
-              padding,
-              training,
-              name="dark_conv"):
-    """
-    DarkNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : Tensor
-        Input tensor.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    training : bool, or a TensorFlow boolean scalar tensor
-      Whether to return the output in training mode or in inference mode.
-    name : str, default 'dark_conv'
-        Block name.
-
-    Returns
-    -------
-    Tensor
-        Resulted tensor.
-    """
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=kernel_size,
-        padding=padding,
-        use_bias=False,
-        name=name + "/conv")
-    x = batchnorm(
-        x=x,
-        training=training,
-        name=name + "/bn")
-    x = tf.nn.leaky_relu(x, alpha=0.1, name=name + "/activ")
-    return x
-
-
-def dark_conv1x1(x,
-                 in_channels,
-                 out_channels,
-                 training,
-                 name="dark_conv1x1"):
-    """
-    1x1 version of the DarkNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : Tensor
-        Input tensor.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    training : bool, or a TensorFlow boolean scalar tensor
-      Whether to return the output in training mode or in inference mode.
-    name : str, default 'dark_conv1x1'
-        Block name.
-
-    Returns
-    -------
-    Tensor
-        Resulted tensor.
-    """
-    return dark_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        padding=0,
-        training=training,
-        name=name)
-
-
-def dark_conv3x3(x,
-                 in_channels,
-                 out_channels,
-                 training,
-                 name="dark_conv3x3"):
-    """
-    3x3 version of the DarkNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : Tensor
-        Input tensor.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    training : bool, or a TensorFlow boolean scalar tensor
-      Whether to return the output in training mode or in inference mode.
-    name : str, default 'dark_conv3x3'
-        Block name.
-
-    Returns
-    -------
-    Tensor
-        Resulted tensor.
-    """
-    return dark_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        padding=1,
-        training=training,
-        name=name)
+from .common import conv2d, maxpool2d, conv1x1_block, conv3x3_block, is_channels_first, flatten
 
 
 def dark_convYxY(x,
                  in_channels,
                  out_channels,
-                 pointwise=True,
-                 training=False,
+                 alpha,
+                 pointwise,
+                 training,
+                 data_format,
                  name="dark_convYxY"):
     """
     DarkNet unit.
@@ -147,10 +29,14 @@ def dark_convYxY(x,
         Number of input channels.
     out_channels : int
         Number of output channels.
+    alpha : float
+        Slope coefficient for Leaky ReLU activation.
     pointwise : bool
         Whether use 1x1 (pointwise) convolution or 3x3 convolution.
-    training : bool, or a TensorFlow boolean scalar tensor, default False
+    training : bool, or a TensorFlow boolean scalar tensor
       Whether to return the output in training mode or in inference mode.
+    data_format : str
+        The ordering of the dimensions in tensors.
     name : str, default 'dark_convYxY'
         Block name.
 
@@ -160,18 +46,22 @@ def dark_convYxY(x,
         Resulted tensor.
     """
     if pointwise:
-        return dark_conv1x1(
+        return conv1x1_block(
             x=x,
             in_channels=in_channels,
             out_channels=out_channels,
+            activation=(lambda y: tf.nn.leaky_relu(y, alpha=alpha, name=name + "/activ")),
             training=training,
+            data_format=data_format,
             name=name)
     else:
-        return dark_conv3x3(
+        return conv3x3_block(
             x=x,
             in_channels=in_channels,
             out_channels=out_channels,
+            activation=(lambda y: tf.nn.leaky_relu(y, alpha=alpha, name=name + "/activ")),
             training=training,
+            data_format=data_format,
             name=name)
 
 
@@ -189,30 +79,39 @@ class DarkNet(object):
         Window size of the final average pooling.
     cls_activ : bool
         Whether classification convolution layer uses an activation.
+    alpha : float, default 0.1
+        Slope coefficient for Leaky ReLU activation.
     in_channels : int, default 3
         Number of input channels.
     in_size : tuple of two ints, default (224, 224)
         Spatial size of the expected input image.
     classes : int, default 1000
         Number of classification classes.
+    data_format : str, default 'channels_last'
+        The ordering of the dimensions in tensors.
     """
     def __init__(self,
                  channels,
                  odd_pointwise,
                  avg_pool_size,
                  cls_activ,
+                 alpha=0.1,
                  in_channels=3,
                  in_size=(224, 224),
                  classes=1000,
+                 data_format="channels_last",
                  **kwargs):
         super(DarkNet, self).__init__(**kwargs)
+        assert (data_format in ["channels_last", "channels_first"])
         self.channels = channels
         self.odd_pointwise = odd_pointwise
         self.avg_pool_size = avg_pool_size
         self.cls_activ = cls_activ
+        self.alpha = alpha
         self.in_channels = in_channels
         self.in_size = in_size
         self.classes = classes
+        self.data_format = data_format
 
     def __call__(self,
                  x,
@@ -239,8 +138,10 @@ class DarkNet(object):
                     x=x,
                     in_channels=in_channels,
                     out_channels=out_channels,
+                    alpha=self.alpha,
                     pointwise=(len(channels_per_stage) > 1) and not (((j + 1) % 2 == 1) ^ self.odd_pointwise),
                     training=training,
+                    data_format=self.data_format,
                     name="features/stage{}/unit{}".format(i + 1, j + 1))
                 in_channels = out_channels
             if i != len(self.channels) - 1:
@@ -248,6 +149,7 @@ class DarkNet(object):
                     x=x,
                     pool_size=2,
                     strides=2,
+                    data_format=self.data_format,
                     name="features/pool{}".format(i + 1))
 
         x = conv2d(
@@ -255,16 +157,20 @@ class DarkNet(object):
             in_channels=in_channels,
             out_channels=self.classes,
             kernel_size=1,
+            data_format=self.data_format,
             name="output/final_conv")
         if self.cls_activ:
-            x = tf.nn.leaky_relu(x, alpha=0.1, name="output/final_activ")
+            x = tf.nn.leaky_relu(x, alpha=self.alpha, name="output/final_activ")
         x = tf.layers.average_pooling2d(
             inputs=x,
             pool_size=self.avg_pool_size,
             strides=1,
-            data_format='channels_first',
+            data_format=self.data_format,
             name="output/final_pool")
-        x = tf.layers.flatten(x)
+        # x = tf.layers.flatten(x)
+        x = flatten(
+            x=x,
+            data_format=self.data_format)
 
         return x
 
@@ -310,14 +216,6 @@ def get_darknet(version,
         odd_pointwise = False
         avg_pool_size = 7
         cls_activ = False
-    # elif version == '53':
-    #     init_block_channels = 32
-    #     layers = [2, 8, 8, 4]
-    #     channels_per_layers = [64, 128, 256, 512, 1024]
-    #     channels = [[ci] * li for (ci, li) in zip(channels_per_layers, layers)]
-    #     odd_pointwise = False
-    #     avg_pool_size = 7
-    #     cls_activ = False
     else:
         raise ValueError("Unsupported DarkNet version {}".format(version))
 
@@ -401,8 +299,8 @@ def darknet19(**kwargs):
 
 def _test():
     import numpy as np
-    from .model_store import init_variables_from_state_dict
 
+    data_format = "channels_last"
     pretrained = False
 
     models = [
@@ -413,11 +311,11 @@ def _test():
 
     for model in models:
 
-        net = model(pretrained=pretrained)
+        net = model(pretrained=pretrained, data_format=data_format)
         x = tf.placeholder(
             dtype=tf.float32,
-            shape=(None, 3, 224, 224),
-            name='xx')
+            shape=(None, 3, 224, 224) if is_channels_first(data_format) else (None, 224, 224, 3),
+            name="xx")
         y_net = net(x)
 
         weight_count = np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])
@@ -428,10 +326,11 @@ def _test():
 
         with tf.Session() as sess:
             if pretrained:
+                from .model_store import init_variables_from_state_dict
                 init_variables_from_state_dict(sess=sess, state_dict=net.state_dict)
             else:
                 sess.run(tf.global_variables_initializer())
-            x_value = np.zeros((1, 3, 224, 224), np.float32)
+            x_value = np.zeros((1, 3, 224, 224) if is_channels_first(data_format) else (1, 224, 224, 3), np.float32)
             y = sess.run(y_net, feed_dict={x: x_value})
             assert (y.shape == (1, 1000))
         tf.reset_default_graph()

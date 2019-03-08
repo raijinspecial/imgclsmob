@@ -13,76 +13,7 @@ import chainer.links as L
 from chainer import Chain
 from functools import partial
 from chainer.serializers import load_npz
-from .common import SimpleSequential, conv1x1, ChannelShuffle
-
-
-def depthwise_conv3x3(channels,
-                      stride):
-    """
-    Depthwise convolution 3x3 layer. This is exactly the same layer as in ShuffleNet.
-
-    Parameters:
-    ----------
-    channels : int
-        Number of input/output channels.
-    stride : int or tuple/list of 2 int
-        Stride of the convolution.
-    """
-    return L.Convolution2D(
-        in_channels=channels,
-        out_channels=channels,
-        ksize=3,
-        stride=stride,
-        pad=1,
-        nobias=True,
-        groups=channels)
-
-
-def group_conv1x1(in_channels,
-                  out_channels,
-                  groups):
-    """
-    Group convolution 1x1 layer. This is exactly the same layer as in ShuffleNet.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    groups : int
-        Number of groups.
-    """
-    return L.Convolution2D(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        ksize=1,
-        nobias=True,
-        groups=groups)
-
-
-def conv3x3(in_channels,
-            out_channels,
-            stride):
-    """
-    Convolution 3x3 layer.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    stride : int or tuple/list of 2 int
-        Stride of the convolution.
-    """
-    return L.Convolution2D(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        ksize=3,
-        stride=stride,
-        pad=1,
-        nobias=True)
+from .common import conv1x1, conv3x3, depthwise_conv3x3, ChannelShuffle, SimpleSequential
 
 
 class MEUnit(Chain):
@@ -120,7 +51,7 @@ class MEUnit(Chain):
 
         with self.init_scope():
             # residual branch
-            self.compress_conv1 = group_conv1x1(
+            self.compress_conv1 = conv1x1(
                 in_channels=in_channels,
                 out_channels=mid_channels,
                 groups=(1 if ignore_group else groups))
@@ -132,7 +63,7 @@ class MEUnit(Chain):
                 channels=mid_channels,
                 stride=(2 if self.downsample else 1))
             self.dw_bn2 = L.BatchNormalization(size=mid_channels)
-            self.expand_conv3 = group_conv1x1(
+            self.expand_conv3 = conv1x1(
                 in_channels=mid_channels,
                 out_channels=out_channels,
                 groups=groups)

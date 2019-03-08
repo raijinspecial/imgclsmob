@@ -8,46 +8,7 @@ __all__ = ['SqueezeNext', 'sqnxt23_w1', 'sqnxt23_w3d2', 'sqnxt23_w2', 'sqnxt23v5
 import os
 import torch.nn as nn
 import torch.nn.init as init
-
-
-class SqnxtConv(nn.Module):
-    """
-    SqueezeNext specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    stride : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int, default (0, 0)
-        Padding value for convolution layer.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 stride,
-                 padding=(0, 0)):
-        super(SqnxtConv, self).__init__()
-        self.conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding)
-        self.bn = nn.BatchNorm2d(num_features=out_channels)
-        self.activ = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.activ(x)
-        return x
+from .common import ConvBlock, conv1x1_block, conv7x7_block
 
 
 class SqnxtUnit(nn.Module):
@@ -78,40 +39,40 @@ class SqnxtUnit(nn.Module):
             reduction_den = 2
             self.resize_identity = False
 
-        self.conv1 = SqnxtConv(
+        self.conv1 = conv1x1_block(
             in_channels=in_channels,
             out_channels=(in_channels // reduction_den),
-            kernel_size=1,
-            stride=stride)
-        self.conv2 = SqnxtConv(
+            stride=stride,
+            bias=True)
+        self.conv2 = conv1x1_block(
             in_channels=(in_channels // reduction_den),
             out_channels=(in_channels // (2 * reduction_den)),
-            kernel_size=1,
-            stride=1)
-        self.conv3 = SqnxtConv(
+            bias=True)
+        self.conv3 = ConvBlock(
             in_channels=(in_channels // (2 * reduction_den)),
             out_channels=(in_channels // reduction_den),
             kernel_size=(1, 3),
             stride=1,
-            padding=(0, 1))
-        self.conv4 = SqnxtConv(
+            padding=(0, 1),
+            bias=True)
+        self.conv4 = ConvBlock(
             in_channels=(in_channels // reduction_den),
             out_channels=(in_channels // reduction_den),
             kernel_size=(3, 1),
             stride=1,
-            padding=(1, 0))
-        self.conv5 = SqnxtConv(
+            padding=(1, 0),
+            bias=True)
+        self.conv5 = conv1x1_block(
             in_channels=(in_channels // reduction_den),
             out_channels=out_channels,
-            kernel_size=1,
-            stride=1)
+            bias=True)
 
         if self.resize_identity:
-            self.identity_conv = SqnxtConv(
+            self.identity_conv = conv1x1_block(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                kernel_size=1,
-                stride=stride)
+                stride=stride,
+                bias=True)
         self.activ = nn.ReLU(inplace=True)
 
     def forward(self, x):
@@ -144,12 +105,12 @@ class SqnxtInitBlock(nn.Module):
                  in_channels,
                  out_channels):
         super(SqnxtInitBlock, self).__init__()
-        self.conv = SqnxtConv(
+        self.conv = conv7x7_block(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=7,
             stride=2,
-            padding=1)
+            padding=1,
+            bias=True)
         self.pool = nn.MaxPool2d(
             kernel_size=3,
             stride=2,
@@ -206,11 +167,10 @@ class SqueezeNext(nn.Module):
                     stride=stride))
                 in_channels = out_channels
             self.features.add_module("stage{}".format(i + 1), stage)
-        self.features.add_module('final_block', SqnxtConv(
+        self.features.add_module('final_block', conv1x1_block(
             in_channels=in_channels,
             out_channels=final_block_channels,
-            kernel_size=1,
-            stride=1))
+            bias=True))
         in_channels = final_block_channels
         self.features.add_module('final_pool', nn.AvgPool2d(
             kernel_size=7,
@@ -311,7 +271,7 @@ def sqnxt23_w1(**kwargs):
 
 def sqnxt23_w3d2(**kwargs):
     """
-    0.75-SqNxt-23 model from 'SqueezeNext: Hardware-Aware Neural Network Design,' https://arxiv.org/abs/1803.10615.
+    1.5-SqNxt-23 model from 'SqueezeNext: Hardware-Aware Neural Network Design,' https://arxiv.org/abs/1803.10615.
 
     Parameters:
     ----------
@@ -325,7 +285,7 @@ def sqnxt23_w3d2(**kwargs):
 
 def sqnxt23_w2(**kwargs):
     """
-    0.5-SqNxt-23 model from 'SqueezeNext: Hardware-Aware Neural Network Design,' https://arxiv.org/abs/1803.10615.
+    2.0-SqNxt-23 model from 'SqueezeNext: Hardware-Aware Neural Network Design,' https://arxiv.org/abs/1803.10615.
 
     Parameters:
     ----------
@@ -353,7 +313,7 @@ def sqnxt23v5_w1(**kwargs):
 
 def sqnxt23v5_w3d2(**kwargs):
     """
-    0.75-SqNxt-23v5 model from 'SqueezeNext: Hardware-Aware Neural Network Design,' https://arxiv.org/abs/1803.10615.
+    1.5-SqNxt-23v5 model from 'SqueezeNext: Hardware-Aware Neural Network Design,' https://arxiv.org/abs/1803.10615.
 
     Parameters:
     ----------
@@ -367,7 +327,7 @@ def sqnxt23v5_w3d2(**kwargs):
 
 def sqnxt23v5_w2(**kwargs):
     """
-    0.5-SqNxt-23v5 model from 'SqueezeNext: Hardware-Aware Neural Network Design,' https://arxiv.org/abs/1803.10615.
+    2.0-SqNxt-23v5 model from 'SqueezeNext: Hardware-Aware Neural Network Design,' https://arxiv.org/abs/1803.10615.
 
     Parameters:
     ----------
@@ -379,8 +339,16 @@ def sqnxt23v5_w2(**kwargs):
     return get_squeezenext(version="23v5", width_scale=2.0, model_name="sqnxt23v5_w2", **kwargs)
 
 
-def _test():
+def _calc_width(net):
     import numpy as np
+    net_params = filter(lambda p: p.requires_grad, net.parameters())
+    weight_count = 0
+    for param in net_params:
+        weight_count += np.prod(param.size())
+    return weight_count
+
+
+def _test():
     import torch
     from torch.autograd import Variable
 
@@ -401,10 +369,7 @@ def _test():
 
         # net.eval()
         net.train()
-        net_params = filter(lambda p: p.requires_grad, net.parameters())
-        weight_count = 0
-        for param in net_params:
-            weight_count += np.prod(param.size())
+        weight_count = _calc_width(net)
         print("m={}, {}".format(model.__name__, weight_count))
         assert (model != sqnxt23_w1 or weight_count == 724056)
         assert (model != sqnxt23_w3d2 or weight_count == 1511824)

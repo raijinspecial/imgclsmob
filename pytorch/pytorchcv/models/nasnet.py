@@ -4,7 +4,7 @@
     https://arxiv.org/abs/1707.07012.
 """
 
-__all__ = ['NASNet', 'nasnet_4a1056', 'nasnet_6a4032']
+__all__ = ['NASNet', 'nasnet_4a1056', 'nasnet_6a4032', 'nasnet_dual_path_sequential']
 
 import os
 import torch
@@ -300,7 +300,7 @@ class DwsConv(nn.Module):
     kernel_size : int or tuple/list of 2 int
         Convolution window size.
     stride : int or tuple/list of 2 int
-        Stride of the convolution.
+        Strides of the convolution.
     padding : int or tuple/list of 2 int
         Padding value for convolution layer.
     bias : bool, default False
@@ -346,7 +346,7 @@ class NasDwsConv(nn.Module):
     kernel_size : int or tuple/list of 2 int
         Convolution window size.
     stride : int or tuple/list of 2 int
-        Stride of the convolution.
+        Strides of the convolution.
     padding : int or tuple/list of 2 int
         Padding value for convolution layer.
     extra_padding : bool, default False
@@ -398,7 +398,7 @@ class DwsBranch(nn.Module):
     kernel_size : int or tuple/list of 2 int
         Convolution window size.
     stride : int or tuple/list of 2 int
-        Stride of the convolution.
+        Strides of the convolution.
     padding : int or tuple/list of 2 int
         Padding value for convolution layer.
     extra_padding : bool, default False
@@ -1267,8 +1267,16 @@ def nasnet_6a4032(**kwargs):
         **kwargs)
 
 
-def _test():
+def _calc_width(net):
     import numpy as np
+    net_params = filter(lambda p: p.requires_grad, net.parameters())
+    weight_count = 0
+    for param in net_params:
+        weight_count += np.prod(param.size())
+    return weight_count
+
+
+def _test():
     import torch
     from torch.autograd import Variable
 
@@ -1285,10 +1293,7 @@ def _test():
 
         # net.train()
         net.eval()
-        net_params = filter(lambda p: p.requires_grad, net.parameters())
-        weight_count = 0
-        for param in net_params:
-            weight_count += np.prod(param.size())
+        weight_count = _calc_width(net)
         print("m={}, {}".format(model.__name__, weight_count))
         assert (model != nasnet_4a1056 or weight_count == 5289978)
         assert (model != nasnet_6a4032 or weight_count == 88753150)

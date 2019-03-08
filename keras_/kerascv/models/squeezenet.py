@@ -7,10 +7,9 @@
 __all__ = ['squeezenet', 'squeezenet_v1_0', 'squeezenet_v1_1', 'squeezeresnet_v1_0', 'squeezeresnet_v1_1']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import max_pool2d_ceil, conv2d
+from .common import maxpool2d, conv2d, is_channels_first, get_channel_axis, flatten
 
 
 def fire_conv(x,
@@ -111,8 +110,7 @@ def fire_unit(x,
         padding=1,
         name=name + "/expand3x3")
 
-    channel_axis = 1 if K.image_data_format() == 'channels_first' else -1
-    out = nn.concatenate([y1, y2], axis=channel_axis, name=name + "/concat")
+    out = nn.concatenate([y1, y2], axis=get_channel_axis(), name=name + "/concat")
 
     if residual:
         out = nn.add([out, identity], name=name + "/add")
@@ -186,7 +184,7 @@ def squeezenet(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
     x = squeeze_init_block(
@@ -197,11 +195,11 @@ def squeezenet(channels,
         name="features/init_block")
     in_channels = init_block_channels
     for i, channels_per_stage in enumerate(channels):
-        x = max_pool2d_ceil(
+        x = maxpool2d(
             x=x,
             pool_size=3,
             strides=2,
-            padding="valid",
+            ceil_mode=True,
             name="features/pool{}".format(i + 1))
         for j, out_channels in enumerate(channels_per_stage):
             expand_channels = out_channels // 2
@@ -228,7 +226,8 @@ def squeezenet(channels,
         pool_size=13,
         strides=1,
         name="output/final_pool")(x)
-    x = nn.Flatten()(x)
+    # x = nn.Flatten()(x)
+    x = flatten(x)
 
     model = Model(inputs=input, outputs=x)
     model.in_size = in_size
@@ -285,11 +284,11 @@ def get_squeezenet(version,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -378,7 +377,10 @@ def _test():
         assert (model != squeezeresnet_v1_0 or weight_count == 1248424)
         assert (model != squeezeresnet_v1_1 or weight_count == 1235496)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

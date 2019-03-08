@@ -4,111 +4,12 @@
     https://arxiv.org/abs/1807.11164.
 """
 
-__all__ = ['ShuffleNetV2b', 'shufflenetv2b_wd2', 'shufflenetv2b_w1', 'shufflenetv2b_w3d2', 'shufflenetv2b_w2',
-           'shufflenetv2c_wd2', 'shufflenetv2c_w1']
+__all__ = ['ShuffleNetV2b', 'shufflenetv2b_wd2', 'shufflenetv2b_w1', 'shufflenetv2b_w3d2', 'shufflenetv2b_w2']
 
 import os
 from mxnet import cpu
 from mxnet.gluon import nn, HybridBlock
-from .common import ChannelShuffle, ChannelShuffle2, SEBlock
-
-
-class ShuffleConv(HybridBlock):
-    """
-    ShuffleNetV2(b) specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 strides,
-                 padding,
-                 **kwargs):
-        super(ShuffleConv, self).__init__(**kwargs)
-        with self.name_scope():
-            self.conv = nn.Conv2D(
-                channels=out_channels,
-                kernel_size=kernel_size,
-                strides=strides,
-                padding=padding,
-                use_bias=False,
-                in_channels=in_channels)
-            self.bn = nn.BatchNorm(
-                in_channels=out_channels)
-            self.activ = nn.Activation('relu')
-
-    def hybrid_forward(self, F, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.activ(x)
-        return x
-
-
-def shuffle_conv1x1(in_channels,
-                    out_channels):
-    """
-    1x1 version of the ShuffleNetV2(b) specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    """
-    return ShuffleConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        strides=1,
-        padding=0)
-
-
-class ShuffleDwConv3x3(HybridBlock):
-    """
-    ShuffleNetV2(b) specific depthwise convolution 3x3 layer.
-
-    Parameters:
-    ----------
-    channels : int
-        Number of input/output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    """
-    def __init__(self,
-                 channels,
-                 strides,
-                 **kwargs):
-        super(ShuffleDwConv3x3, self).__init__(**kwargs)
-        with self.name_scope():
-            self.conv = nn.Conv2D(
-                channels=channels,
-                kernel_size=3,
-                strides=strides,
-                padding=1,
-                groups=channels,
-                use_bias=False,
-                in_channels=channels)
-            self.bn = nn.BatchNorm(
-                in_channels=channels)
-
-    def hybrid_forward(self, F, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        return x
+from .common import conv1x1_block, conv3x3_block, dwconv3x3_block, ChannelShuffle, ChannelShuffle2, SEBlock
 
 
 class ShuffleUnit(HybridBlock):
@@ -150,22 +51,28 @@ class ShuffleUnit(HybridBlock):
         y2_out_channels = out_channels - y2_in_channels
 
         with self.name_scope():
-            self.conv1 = shuffle_conv1x1(
+            self.conv1 = conv1x1_block(
                 in_channels=y2_in_channels,
                 out_channels=mid_channels)
-            self.dconv = ShuffleDwConv3x3(
-                channels=mid_channels,
-                strides=(2 if self.downsample else 1))
-            self.conv2 = shuffle_conv1x1(
+            self.dconv = dwconv3x3_block(
+                in_channels=mid_channels,
+                out_channels=mid_channels,
+                strides=(2 if self.downsample else 1),
+                activation=None,
+                activate=False)
+            self.conv2 = conv1x1_block(
                 in_channels=mid_channels,
                 out_channels=y2_out_channels)
             if self.use_se:
                 self.se = SEBlock(channels=y2_out_channels)
             if downsample:
-                self.shortcut_dconv = ShuffleDwConv3x3(
-                    channels=in_channels,
-                    strides=2)
-                self.shortcut_conv = shuffle_conv1x1(
+                self.shortcut_dconv = dwconv3x3_block(
+                    in_channels=in_channels,
+                    out_channels=in_channels,
+                    strides=2,
+                    activation=None,
+                    activate=False)
+                self.shortcut_conv = conv1x1_block(
                     in_channels=in_channels,
                     out_channels=in_channels)
 
@@ -214,12 +121,10 @@ class ShuffleInitBlock(HybridBlock):
                  **kwargs):
         super(ShuffleInitBlock, self).__init__(**kwargs)
         with self.name_scope():
-            self.conv = ShuffleConv(
+            self.conv = conv3x3_block(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                kernel_size=3,
-                strides=2,
-                padding=1)
+                strides=2)
             self.pool = nn.MaxPool2D(
                 pool_size=3,
                 strides=2,
@@ -293,7 +198,7 @@ class ShuffleNetV2b(HybridBlock):
                             shuffle_group_first=shuffle_group_first))
                         in_channels = out_channels
                 self.features.add(stage)
-            self.features.add(shuffle_conv1x1(
+            self.features.add(conv1x1_block(
                 in_channels=in_channels,
                 out_channels=final_block_channels))
             in_channels = final_block_channels
@@ -455,48 +360,6 @@ def shufflenetv2b_w2(**kwargs):
         **kwargs)
 
 
-def shufflenetv2c_wd2(**kwargs):
-    """
-    ShuffleNetV2(c) 0.5x model from 'ShuffleNet V2: Practical Guidelines for Efficient CNN Architecture Design,'
-    https://arxiv.org/abs/1807.11164.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
-    root : str, default '~/.mxnet/models'
-        Location for keeping the model parameters.
-    """
-    return get_shufflenetv2b(
-        width_scale=(12.0 / 29.0),
-        shuffle_group_first=False,
-        model_name="shufflenetv2c_wd2",
-        **kwargs)
-
-
-def shufflenetv2c_w1(**kwargs):
-    """
-    ShuffleNetV2(c) 1x model from 'ShuffleNet V2: Practical Guidelines for Efficient CNN Architecture Design,'
-    https://arxiv.org/abs/1807.11164.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
-    root : str, default '~/.mxnet/models'
-        Location for keeping the model parameters.
-    """
-    return get_shufflenetv2b(
-        width_scale=1.0,
-        shuffle_group_first=False,
-        model_name="shufflenetv2c_w1",
-        **kwargs)
-
-
 def _test():
     import numpy as np
     import mxnet as mx
@@ -504,12 +367,10 @@ def _test():
     pretrained = False
 
     models = [
-        # shufflenetv2b_wd2,
-        # shufflenetv2b_w1,
-        # shufflenetv2b_w3d2,
-        # shufflenetv2b_w2,
-        shufflenetv2c_wd2,
-        # shufflenetv2c_w1,
+        shufflenetv2b_wd2,
+        shufflenetv2b_w1,
+        shufflenetv2b_w3d2,
+        shufflenetv2b_w2,
     ]
 
     for model in models:
@@ -532,8 +393,6 @@ def _test():
         assert (model != shufflenetv2b_w1 or weight_count == 2279760)
         assert (model != shufflenetv2b_w3d2 or weight_count == 4410194)
         assert (model != shufflenetv2b_w2 or weight_count == 7611290)
-        assert (model != shufflenetv2c_wd2 or weight_count == 1366792)
-        assert (model != shufflenetv2c_w1 or weight_count == 2279760)
 
         x = mx.nd.zeros((1, 3, 224, 224), ctx=ctx)
         y = net(x)

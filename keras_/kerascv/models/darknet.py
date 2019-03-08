@@ -6,122 +6,16 @@
 __all__ = ['darknet', 'darknet_ref', 'darknet_tiny', 'darknet19']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import conv2d, GluonBatchNormalization
-
-
-def dark_conv(x,
-              in_channels,
-              out_channels,
-              kernel_size,
-              padding,
-              name="dark_conv"):
-    """
-    DarkNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    name : str, default 'dark_conv'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=kernel_size,
-        padding=padding,
-        use_bias=False,
-        name=name + "/conv")
-    x = GluonBatchNormalization(name=name + "/bn")(x)
-    x = nn.LeakyReLU(alpha=0.1, name=name + "/activ")(x)
-    return x
-
-
-def dark_conv1x1(x,
-                 in_channels,
-                 out_channels,
-                 name="dark_conv1x1"):
-    """
-    1x1 version of the DarkNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    name : str, default 'dark_conv1x1'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return dark_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        padding=0,
-        name=name)
-
-
-def dark_conv3x3(x,
-                 in_channels,
-                 out_channels,
-                 name="dark_conv3x3"):
-    """
-    3x3 version of the DarkNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    name : str, default 'dark_conv3x3'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return dark_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        padding=1,
-        name=name)
+from .common import conv1x1_block, conv3x3_block, is_channels_first, flatten
 
 
 def dark_convYxY(x,
                  in_channels,
                  out_channels,
-                 pointwise=True,
+                 alpha,
+                 pointwise,
                  name="dark_convYxY"):
     """
     DarkNet unit.
@@ -134,6 +28,8 @@ def dark_convYxY(x,
         Number of input channels.
     out_channels : int
         Number of output channels.
+    alpha : float
+        Slope coefficient for Leaky ReLU activation.
     pointwise : bool
         Whether use 1x1 (pointwise) convolution or 3x3 convolution.
     name : str, default 'dark_convYxY'
@@ -145,16 +41,18 @@ def dark_convYxY(x,
         Resulted tensor/variable/symbol.
     """
     if pointwise:
-        return dark_conv1x1(
+        return conv1x1_block(
             x=x,
             in_channels=in_channels,
             out_channels=out_channels,
+            activation=nn.LeakyReLU(alpha=alpha, name=name + "/activ"),
             name=name)
     else:
-        return dark_conv3x3(
+        return conv3x3_block(
             x=x,
             in_channels=in_channels,
             out_channels=out_channels,
+            activation=nn.LeakyReLU(alpha=alpha, name=name + "/activ"),
             name=name)
 
 
@@ -162,6 +60,7 @@ def darknet(channels,
             odd_pointwise,
             avg_pool_size,
             cls_activ,
+            alpha=0.1,
             in_channels=3,
             in_size=(224, 224),
             classes=1000):
@@ -178,6 +77,8 @@ def darknet(channels,
         Window size of the final average pooling.
     cls_activ : bool
         Whether classification convolution layer uses an activation.
+    alpha : float, default 0.1
+        Slope coefficient for Leaky ReLU activation.
     in_channels : int, default 3
         Number of input channels.
     in_size : tuple of two ints, default (224, 224)
@@ -185,7 +86,7 @@ def darknet(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
     x = input
@@ -195,6 +96,7 @@ def darknet(channels,
                 x=x,
                 in_channels=in_channels,
                 out_channels=out_channels,
+                alpha=alpha,
                 pointwise=(len(channels_per_stage) > 1) and not(((j + 1) % 2 == 1) ^ odd_pointwise),
                 name="features/stage{}/unit{}".format(i + 1, j + 1))
             in_channels = out_channels
@@ -209,12 +111,13 @@ def darknet(channels,
         kernel_size=1,
         name="output/final_conv")(x)
     if cls_activ:
-        x = nn.LeakyReLU(alpha=0.1, name="output/final_activ")(x)
+        x = nn.LeakyReLU(alpha=alpha, name="output/final_activ")(x)
     x = nn.AvgPool2D(
         pool_size=avg_pool_size,
         strides=1,
         name="output/final_pool")(x)
-    x = nn.Flatten()(x)
+    # x = nn.Flatten()(x)
+    x = flatten(x)
 
     model = Model(inputs=input, outputs=x)
     model.in_size = in_size
@@ -242,30 +145,22 @@ def get_darknet(version,
         Location for keeping the model parameters.
     """
 
-    if version == 'ref':
+    if version == "ref":
         channels = [[16], [32], [64], [128], [256], [512], [1024]]
         odd_pointwise = False
         avg_pool_size = 3
         cls_activ = True
-    elif version == 'tiny':
+    elif version == "tiny":
         channels = [[16], [32], [16, 128, 16, 128], [32, 256, 32, 256], [64, 512, 64, 512, 128]]
         odd_pointwise = True
         avg_pool_size = 14
         cls_activ = False
-    elif version == '19':
+    elif version == "19":
         channels = [[32], [64], [128, 64, 128], [256, 128, 256], [512, 256, 512, 256, 512],
                     [1024, 512, 1024, 512, 1024]]
         odd_pointwise = False
         avg_pool_size = 7
         cls_activ = False
-    # elif version == '53':
-    #     init_block_channels = 32
-    #     layers = [2, 8, 8, 4]
-    #     channels_per_layers = [64, 128, 256, 512, 1024]
-    #     channels = [[ci] * li for (ci, li) in zip(channels_per_layers, layers)]
-    #     odd_pointwise = False
-    #     avg_pool_size = 7
-    #     cls_activ = False
     else:
         raise ValueError("Unsupported DarkNet version {}".format(version))
 
@@ -279,11 +174,11 @@ def get_darknet(version,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -353,7 +248,10 @@ def _test():
         assert (model != darknet_tiny or weight_count == 1042104)
         assert (model != darknet19 or weight_count == 20842376)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

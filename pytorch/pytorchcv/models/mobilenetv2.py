@@ -8,111 +8,7 @@ __all__ = ['MobileNetV2', 'mobilenetv2_w1', 'mobilenetv2_w3d4', 'mobilenetv2_wd2
 import os
 import torch.nn as nn
 import torch.nn.init as init
-
-
-class MobnetConv(nn.Module):
-    """
-    MobileNetV2 specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    stride : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    groups : int
-        Number of groups.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 stride,
-                 padding,
-                 groups,
-                 activate):
-        super(MobnetConv, self).__init__()
-        self.activate = activate
-
-        self.conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            groups=groups,
-            bias=False)
-        self.bn = nn.BatchNorm2d(num_features=out_channels)
-        if self.activate:
-            self.activ = nn.ReLU6(inplace=True)
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        if self.activate:
-            x = self.activ(x)
-        return x
-
-
-def mobnet_conv1x1(in_channels,
-                   out_channels,
-                   activate):
-    """
-    1x1 version of the MobileNetV2 specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    return MobnetConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        stride=1,
-        padding=0,
-        groups=1,
-        activate=activate)
-
-
-def mobnet_dwconv3x3(in_channels,
-                     out_channels,
-                     stride,
-                     activate):
-    """
-    3x3 depthwise version of the MobileNetV2 specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    stride : int or tuple/list of 2 int
-        Strides of the convolution.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    return MobnetConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        stride=stride,
-        padding=1,
-        groups=out_channels,
-        activate=activate)
+from .common import conv1x1, conv1x1_block, conv3x3_block, dwconv3x3_block
 
 
 class LinearBottleneck(nn.Module):
@@ -139,18 +35,19 @@ class LinearBottleneck(nn.Module):
         self.residual = (in_channels == out_channels) and (stride == 1)
         mid_channels = in_channels * 6 if expansion else in_channels
 
-        self.conv1 = mobnet_conv1x1(
+        self.conv1 = conv1x1_block(
             in_channels=in_channels,
             out_channels=mid_channels,
-            activate=True)
-        self.conv2 = mobnet_dwconv3x3(
+            activation="relu6")
+        self.conv2 = dwconv3x3_block(
             in_channels=mid_channels,
             out_channels=mid_channels,
             stride=stride,
-            activate=True)
-        self.conv3 = mobnet_conv1x1(
+            activation="relu6")
+        self.conv3 = conv1x1_block(
             in_channels=mid_channels,
             out_channels=out_channels,
+            activation=None,
             activate=False)
 
     def forward(self, x):
@@ -195,14 +92,11 @@ class MobileNetV2(nn.Module):
         self.num_classes = num_classes
 
         self.features = nn.Sequential()
-        self.features.add_module("init_block", MobnetConv(
+        self.features.add_module("init_block", conv3x3_block(
             in_channels=in_channels,
             out_channels=init_block_channels,
-            kernel_size=3,
             stride=2,
-            padding=1,
-            groups=1,
-            activate=True))
+            activation="relu6"))
         in_channels = init_block_channels
         for i, channels_per_stage in enumerate(channels):
             stage = nn.Sequential()
@@ -216,19 +110,18 @@ class MobileNetV2(nn.Module):
                     expansion=expansion))
                 in_channels = out_channels
             self.features.add_module("stage{}".format(i + 1), stage)
-        self.features.add_module('final_block', mobnet_conv1x1(
+        self.features.add_module('final_block', conv1x1_block(
             in_channels=in_channels,
             out_channels=final_block_channels,
-            activate=True))
+            activation="relu6"))
         in_channels = final_block_channels
         self.features.add_module('final_pool', nn.AvgPool2d(
             kernel_size=7,
             stride=1))
 
-        self.output = nn.Conv2d(
+        self.output = conv1x1(
             in_channels=in_channels,
             out_channels=num_classes,
-            kernel_size=1,
             bias=False)
 
         self._init_params()
@@ -363,12 +256,20 @@ def mobilenetv2_wd4(**kwargs):
     return get_mobilenetv2(width_scale=0.25, model_name="mobilenetv2_wd4", **kwargs)
 
 
-def _test():
+def _calc_width(net):
     import numpy as np
+    net_params = filter(lambda p: p.requires_grad, net.parameters())
+    weight_count = 0
+    for param in net_params:
+        weight_count += np.prod(param.size())
+    return weight_count
+
+
+def _test():
     import torch
     from torch.autograd import Variable
 
-    pretrained = True
+    pretrained = False
 
     models = [
         mobilenetv2_w1,
@@ -383,10 +284,7 @@ def _test():
 
         # net.train()
         net.eval()
-        net_params = filter(lambda p: p.requires_grad, net.parameters())
-        weight_count = 0
-        for param in net_params:
-            weight_count += np.prod(param.size())
+        weight_count = _calc_width(net)
         print("m={}, {}".format(model.__name__, weight_count))
         assert (model != mobilenetv2_w1 or weight_count == 3504960)
         assert (model != mobilenetv2_w3d4 or weight_count == 2627592)

@@ -3,128 +3,13 @@
     Original paper: 'Deep Pyramidal Residual Networks,' https://arxiv.org/abs/1610.02915.
 """
 
-__all__ = ['PyramidNet', 'pyramidnet101_a360']
+__all__ = ['PyramidNet', 'pyramidnet101_a360', 'PyrUnit']
 
 import os
 from mxnet import cpu
 from mxnet.gluon import nn, HybridBlock
-
-
-class PyrConv(HybridBlock):
-    """
-    PyramidNet specific convolution block, with pre-activation.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    bn_use_global_stats : bool
-        Whether global moving statistics is used instead of local batch-norm for BatchNorm layers.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 strides,
-                 padding,
-                 bn_use_global_stats,
-                 activate,
-                 **kwargs):
-        super(PyrConv, self).__init__(**kwargs)
-        self.activate = activate
-
-        with self.name_scope():
-            self.bn = nn.BatchNorm(
-                in_channels=in_channels,
-                use_global_stats=bn_use_global_stats)
-            if self.activate:
-                self.activ = nn.Activation('relu')
-            self.conv = nn.Conv2D(
-                channels=out_channels,
-                kernel_size=kernel_size,
-                strides=strides,
-                padding=padding,
-                use_bias=False,
-                in_channels=in_channels)
-
-    def hybrid_forward(self, F, x):
-        x = self.bn(x)
-        if self.activate:
-            x = self.activ(x)
-        x = self.conv(x)
-        return x
-
-
-def pyr_conv1x1(in_channels,
-                out_channels,
-                strides,
-                bn_use_global_stats,
-                activate):
-    """
-    1x1 version of the PyramidNet specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    bn_use_global_stats : bool
-        Whether global moving statistics is used instead of local batch-norm for BatchNorm layers.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    return PyrConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        strides=strides,
-        padding=0,
-        bn_use_global_stats=bn_use_global_stats,
-        activate=activate)
-
-
-def pyr_conv3x3(in_channels,
-                out_channels,
-                strides,
-                bn_use_global_stats,
-                activate):
-    """
-    3x3 version of the PyramidNet specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    bn_use_global_stats : bool
-        Whether global moving statistics is used instead of local batch-norm for BatchNorm layers.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    return PyrConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        strides=strides,
-        padding=1,
-        bn_use_global_stats=bn_use_global_stats,
-        activate=activate)
+from .common import pre_conv1x1_block, pre_conv3x3_block
+from .preresnet import PreResActivation
 
 
 class PyrBlock(HybridBlock):
@@ -150,18 +35,16 @@ class PyrBlock(HybridBlock):
                  **kwargs):
         super(PyrBlock, self).__init__(**kwargs)
         with self.name_scope():
-            self.conv1 = pyr_conv3x3(
+            self.conv1 = pre_conv3x3_block(
                 in_channels=in_channels,
                 out_channels=out_channels,
                 strides=strides,
                 bn_use_global_stats=bn_use_global_stats,
                 activate=False)
-            self.conv2 = pyr_conv3x3(
+            self.conv2 = pre_conv3x3_block(
                 in_channels=out_channels,
                 out_channels=out_channels,
-                strides=1,
-                bn_use_global_stats=bn_use_global_stats,
-                activate=True)
+                bn_use_global_stats=bn_use_global_stats)
 
     def hybrid_forward(self, F, x):
         x = self.conv1(x)
@@ -194,24 +77,20 @@ class PyrBottleneck(HybridBlock):
         mid_channels = out_channels // 4
 
         with self.name_scope():
-            self.conv1 = pyr_conv1x1(
+            self.conv1 = pre_conv1x1_block(
                 in_channels=in_channels,
                 out_channels=mid_channels,
-                strides=1,
                 bn_use_global_stats=bn_use_global_stats,
                 activate=False)
-            self.conv2 = pyr_conv3x3(
+            self.conv2 = pre_conv3x3_block(
                 in_channels=mid_channels,
                 out_channels=mid_channels,
                 strides=strides,
-                bn_use_global_stats=bn_use_global_stats,
-                activate=True)
-            self.conv3 = pyr_conv1x1(
+                bn_use_global_stats=bn_use_global_stats)
+            self.conv3 = pre_conv1x1_block(
                 in_channels=mid_channels,
                 out_channels=out_channels,
-                strides=1,
-                bn_use_global_stats=bn_use_global_stats,
-                activate=True)
+                bn_use_global_stats=bn_use_global_stats)
 
     def hybrid_forward(self, F, x):
         x = self.conv1(x)
@@ -245,7 +124,7 @@ class PyrUnit(HybridBlock):
                  bottleneck,
                  **kwargs):
         super(PyrUnit, self).__init__(**kwargs)
-        assert (out_channels > in_channels)
+        assert (out_channels >= in_channels)
         self.resize_identity = (strides != 1)
         self.identity_pad_width = out_channels - in_channels
 
@@ -277,10 +156,11 @@ class PyrUnit(HybridBlock):
         x = self.bn(x)
         if self.resize_identity:
             identity = self.identity_pool(identity)
-        identity = F.concat(
-            identity,
-            F.zeros_like(F.slice_axis(x, axis=1, begin=0, end=self.identity_pad_width)),
-            dim=1)
+        if self.identity_pad_width > 0:
+            identity = F.concat(
+                identity,
+                F.zeros_like(F.slice_axis(x, axis=1, begin=0, end=self.identity_pad_width)),
+                dim=1)
         x = x + identity
         return x
 
@@ -326,34 +206,6 @@ class PyrInitBlock(HybridBlock):
         x = self.bn(x)
         x = self.activ(x)
         x = self.pool(x)
-        return x
-
-
-class PreActivation(HybridBlock):
-    """
-    PyramidNet pure pre-activation block without convolution layer. It's used by itself as the final block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    bn_use_global_stats : bool
-        Whether global moving statistics is used instead of local batch-norm for BatchNorm layers.
-    """
-    def __init__(self,
-                 in_channels,
-                 bn_use_global_stats,
-                 **kwargs):
-        super(PreActivation, self).__init__(**kwargs)
-        with self.name_scope():
-            self.bn = nn.BatchNorm(
-                in_channels=in_channels,
-                use_global_stats=bn_use_global_stats)
-            self.activ = nn.Activation('relu')
-
-    def hybrid_forward(self, F, x):
-        x = self.bn(x)
-        x = self.activ(x)
         return x
 
 
@@ -412,7 +264,7 @@ class PyramidNet(HybridBlock):
                             bottleneck=bottleneck))
                         in_channels = out_channels
                 self.features.add(stage)
-            self.features.add(PreActivation(
+            self.features.add(PreResActivation(
                 in_channels=in_channels,
                 bn_use_global_stats=bn_use_global_stats))
             self.features.add(nn.AvgPool2D(

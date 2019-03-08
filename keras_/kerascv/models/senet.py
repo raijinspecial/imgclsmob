@@ -7,11 +7,9 @@ __all__ = ['senet', 'senet52', 'senet103', 'senet154']
 
 import os
 import math
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import se_block
-from .resnext import resnext_conv3x3, resnext_conv1x1
+from .common import conv1x1_block, conv3x3_block, se_block, is_channels_first, flatten
 
 
 def senet_bottleneck(x,
@@ -47,30 +45,26 @@ def senet_bottleneck(x,
         Resulted tensor/variable/symbol.
     """
     mid_channels = out_channels // 4
-    D = int(math.floor(mid_channels * (bottleneck_width / 64)))
+    D = int(math.floor(mid_channels * (bottleneck_width / 64.0)))
     group_width = cardinality * D
     group_width2 = group_width // 2
 
-    x = resnext_conv1x1(
+    x = conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=group_width2,
-        strides=1,
-        activate=True,
         name=name + "/conv1")
-    x = resnext_conv3x3(
+    x = conv3x3_block(
         x=x,
         in_channels=group_width2,
         out_channels=group_width,
         strides=strides,
         groups=cardinality,
-        activate=True,
         name=name + "/conv2")
-    x = resnext_conv1x1(
+    x = conv1x1_block(
         x=x,
         in_channels=group_width,
         out_channels=out_channels,
-        strides=1,
         activate=False,
         name=name + "/conv3")
     return x
@@ -85,7 +79,7 @@ def senet_unit(x,
                identity_conv3x3,
                name="senet_unit"):
     """
-    SENet unit with residual connection.
+    SENet unit.
 
     Parameters:
     ----------
@@ -114,16 +108,15 @@ def senet_unit(x,
     resize_identity = (in_channels != out_channels) or (strides != 1)
     if resize_identity:
         if identity_conv3x3:
-            identity = resnext_conv3x3(
+            identity = conv3x3_block(
                 x=x,
                 in_channels=in_channels,
                 out_channels=out_channels,
                 strides=strides,
-                groups=1,
                 activate=False,
                 name=name + "/identity_conv")
         else:
-            identity = resnext_conv1x1(
+            identity = conv1x1_block(
                 x=x,
                 in_channels=in_channels,
                 out_channels=out_channels,
@@ -142,12 +135,10 @@ def senet_unit(x,
         bottleneck_width=bottleneck_width,
         name=name + "/body")
 
-    use_se = True
-    if use_se:
-        x = se_block(
-            x=x,
-            channels=out_channels,
-            name=name + "/se")
+    x = se_block(
+        x=x,
+        channels=out_channels,
+        name=name + "/se")
 
     x = nn.add([x, identity], name=name + "/add")
 
@@ -181,29 +172,21 @@ def senet_init_block(x,
     """
     mid_channels = out_channels // 2
 
-    x = resnext_conv3x3(
+    x = conv3x3_block(
         x=x,
         in_channels=in_channels,
         out_channels=mid_channels,
         strides=2,
-        groups=1,
-        activate=True,
         name=name + "/conv1")
-    x = resnext_conv3x3(
+    x = conv3x3_block(
         x=x,
         in_channels=mid_channels,
         out_channels=mid_channels,
-        strides=1,
-        groups=1,
-        activate=True,
         name=name + "/conv2")
-    x = resnext_conv3x3(
+    x = conv3x3_block(
         x=x,
         in_channels=mid_channels,
         out_channels=out_channels,
-        strides=1,
-        groups=1,
-        activate=True,
         name=name + "/conv3")
     x = nn.MaxPool2D(
         pool_size=3,
@@ -240,7 +223,7 @@ def senet(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
     x = senet_init_block(
@@ -268,7 +251,8 @@ def senet(channels,
         strides=1,
         name="features/final_pool")(x)
 
-    x = nn.Flatten()(x)
+    # x = nn.Flatten()(x)
+    x = flatten(x)
     x = nn.Dropout(
         rate=0.2,
         name="output/dropout")(x)
@@ -331,11 +315,11 @@ def get_senet(blocks,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -400,11 +384,14 @@ def _test():
         # net.summary()
         weight_count = keras.utils.layer_utils.count_params(net.trainable_weights)
         print("m={}, {}".format(model.__name__, weight_count))
-        assert (model != senet52 or weight_count == 44659416)  # 22623272
-        assert (model != senet103 or weight_count == 60963096)  # 38908456
-        assert (model != senet154 or weight_count == 115088984)  # 93018024
+        assert (model != senet52 or weight_count == 44659416)
+        assert (model != senet103 or weight_count == 60963096)
+        assert (model != senet154 or weight_count == 115088984)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

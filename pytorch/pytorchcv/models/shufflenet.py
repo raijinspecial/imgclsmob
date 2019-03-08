@@ -12,52 +12,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-from .common import ChannelShuffle
-
-
-def depthwise_conv3x3(channels,
-                      stride):
-    """
-    Depthwise convolution 3x3 layer.
-
-    Parameters:
-    ----------
-    channels : int
-        Number of input/output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    """
-    return nn.Conv2d(
-        in_channels=channels,
-        out_channels=channels,
-        kernel_size=3,
-        stride=stride,
-        padding=1,
-        groups=channels,
-        bias=False)
-
-
-def group_conv1x1(in_channels,
-                  out_channels,
-                  groups):
-    """
-    Group convolution 1x1 layer.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    groups : int
-        Number of groups.
-    """
-    return nn.Conv2d(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        groups=groups,
-        bias=False)
+from .common import conv1x1, conv3x3, depthwise_conv3x3, ChannelShuffle
 
 
 class ShuffleUnit(nn.Module):
@@ -90,7 +45,7 @@ class ShuffleUnit(nn.Module):
         if downsample:
             out_channels -= in_channels
 
-        self.compress_conv1 = group_conv1x1(
+        self.compress_conv1 = conv1x1(
             in_channels=in_channels,
             out_channels=mid_channels,
             groups=(1 if ignore_group else groups))
@@ -102,7 +57,7 @@ class ShuffleUnit(nn.Module):
             channels=mid_channels,
             stride=(2 if self.downsample else 1))
         self.dw_bn2 = nn.BatchNorm2d(num_features=mid_channels)
-        self.expand_conv3 = group_conv1x1(
+        self.expand_conv3 = conv1x1(
             in_channels=mid_channels,
             out_channels=out_channels,
             groups=groups)
@@ -146,13 +101,10 @@ class ShuffleInitBlock(nn.Module):
                  out_channels):
         super(ShuffleInitBlock, self).__init__()
 
-        self.conv = nn.Conv2d(
+        self.conv = conv3x3(
             in_channels=in_channels,
             out_channels=out_channels,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            bias=False)
+            stride=2)
         self.bn = nn.BatchNorm2d(num_features=out_channels)
         self.activ = nn.ReLU(inplace=True)
         self.pool = nn.MaxPool2d(
@@ -469,8 +421,16 @@ def shufflenet_g3_wd4(**kwargs):
     return get_shufflenet(groups=3, width_scale=0.25, model_name="shufflenet_g3_wd4", **kwargs)
 
 
-def _test():
+def _calc_width(net):
     import numpy as np
+    net_params = filter(lambda p: p.requires_grad, net.parameters())
+    weight_count = 0
+    for param in net_params:
+        weight_count += np.prod(param.size())
+    return weight_count
+
+
+def _test():
     import torch
     from torch.autograd import Variable
 
@@ -494,11 +454,10 @@ def _test():
 
         net = model(pretrained=pretrained)
 
-        net.train()
-        net_params = filter(lambda p: p.requires_grad, net.parameters())
-        weight_count = 0
-        for param in net_params:
-            weight_count += np.prod(param.size())
+        # net.train()
+        net.eval()
+        weight_count = _calc_width(net)
+        print("m={}, {}".format(model.__name__, weight_count))
         assert (model != shufflenet_g1_w1 or weight_count == 1531936)
         assert (model != shufflenet_g2_w1 or weight_count == 1733848)
         assert (model != shufflenet_g3_w1 or weight_count == 1865728)

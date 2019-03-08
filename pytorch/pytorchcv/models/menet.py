@@ -11,76 +11,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.init as init
-from .common import conv1x1, ChannelShuffle
-
-
-def depthwise_conv3x3(channels,
-                      stride):
-    """
-    Depthwise convolution 3x3 layer. This is exactly the same layer as in ShuffleNet.
-
-    Parameters:
-    ----------
-    channels : int
-        Number of input/output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    """
-    return nn.Conv2d(
-        in_channels=channels,
-        out_channels=channels,
-        kernel_size=3,
-        stride=stride,
-        padding=1,
-        groups=channels,
-        bias=False)
-
-
-def group_conv1x1(in_channels,
-                  out_channels,
-                  groups):
-    """
-    Group convolution 1x1 layer. This is exactly the same layer as in ShuffleNet.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    groups : int
-        Number of groups.
-    """
-    return nn.Conv2d(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        groups=groups,
-        bias=False)
-
-
-def conv3x3(in_channels,
-            out_channels,
-            stride):
-    """
-    Convolution 3x3 layer.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    stride : int or tuple/list of 2 int
-        Strides of the convolution.
-    """
-    return nn.Conv2d(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        stride=stride,
-        padding=1,
-        bias=False)
+from .common import conv1x1, conv3x3, depthwise_conv3x3, ChannelShuffle
 
 
 class MEUnit(nn.Module):
@@ -117,7 +48,7 @@ class MEUnit(nn.Module):
             out_channels -= in_channels
 
         # residual branch
-        self.compress_conv1 = group_conv1x1(
+        self.compress_conv1 = conv1x1(
             in_channels=in_channels,
             out_channels=mid_channels,
             groups=(1 if ignore_group else groups))
@@ -129,7 +60,7 @@ class MEUnit(nn.Module):
             channels=mid_channels,
             stride=(2 if self.downsample else 1))
         self.dw_bn2 = nn.BatchNorm2d(num_features=mid_channels)
-        self.expand_conv3 = group_conv1x1(
+        self.expand_conv3 = conv1x1(
             in_channels=mid_channels,
             out_channels=out_channels,
             groups=groups)
@@ -499,8 +430,16 @@ def menet456_24x1_g3(**kwargs):
     return get_menet(first_stage_channels=456, side_channels=24, groups=3, model_name="menet456_24x1_g3", **kwargs)
 
 
-def _test():
+def _calc_width(net):
     import numpy as np
+    net_params = filter(lambda p: p.requires_grad, net.parameters())
+    weight_count = 0
+    for param in net_params:
+        weight_count += np.prod(param.size())
+    return weight_count
+
+
+def _test():
     import torch
     from torch.autograd import Variable
 
@@ -509,7 +448,7 @@ def _test():
     models = [
         menet108_8x1_g3,
         menet128_8x1_g4,
-        # menet160_8x1_g8,
+        menet160_8x1_g8,
         menet228_12x1_g3,
         menet256_12x1_g4,
         menet348_12x1_g3,
@@ -521,11 +460,10 @@ def _test():
 
         net = model(pretrained=pretrained)
 
-        net.train()
-        net_params = filter(lambda p: p.requires_grad, net.parameters())
-        weight_count = 0
-        for param in net_params:
-            weight_count += np.prod(param.size())
+        # net.train()
+        net.eval()
+        weight_count = _calc_width(net)
+        print("m={}, {}".format(model.__name__, weight_count))
         assert (model != menet108_8x1_g3 or weight_count == 654516)
         assert (model != menet128_8x1_g4 or weight_count == 750796)
         assert (model != menet160_8x1_g8 or weight_count == 850120)

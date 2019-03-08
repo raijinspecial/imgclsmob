@@ -7,124 +7,10 @@
 __all__ = ['shufflenetv2', 'shufflenetv2_wd2', 'shufflenetv2_w1', 'shufflenetv2_w3d2', 'shufflenetv2_w2']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import conv2d, conv1x1, max_pool2d_ceil, channel_shuffle_lambda, se_block, GluonBatchNormalization
-
-
-def shuffle_conv(x,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 strides,
-                 padding,
-                 name="shuffle_conv"):
-    """
-    ShuffleNetV2 specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    name : str, default 'shuffle_conv'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor and preactivated input tensor.
-    """
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=kernel_size,
-        strides=strides,
-        padding=padding,
-        use_bias=False,
-        name=name + "/conv")
-    x = GluonBatchNormalization(name=name + "/bn")(x)
-    x = nn.Activation("relu", name=name + "/activ")(x)
-    return x
-
-
-def shuffle_conv1x1(x,
-                    in_channels,
-                    out_channels,
-                    name="shuffle_conv1x1"):
-    """
-    1x1 version of the ShuffleNetV2 specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    name : str, default 'shuffle_conv1x1'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return shuffle_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        strides=1,
-        padding=0,
-        name=name)
-
-
-def depthwise_conv3x3(x,
-                      channels,
-                      strides,
-                      name="depthwise_conv3x3"):
-    """
-    Depthwise convolution 3x3 layer.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    channels : int
-        Number of input/output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    name : str, default 'depthwise_conv3x3'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return conv2d(
-        x=x,
-        in_channels=channels,
-        out_channels=channels,
-        kernel_size=3,
-        strides=strides,
-        padding=1,
-        groups=channels,
-        use_bias=False,
-        name=name)
+from .common import conv1x1, depthwise_conv3x3, conv1x1_block, conv3x3_block, maxpool2d, channel_shuffle_lambda,\
+    se_block, batchnorm, is_channels_first, get_channel_axis, flatten
 
 
 def shuffle_unit(x,
@@ -167,22 +53,36 @@ def shuffle_unit(x,
             channels=in_channels,
             strides=2,
             name=name + "/dw_conv4")
-        y1 = GluonBatchNormalization(name=name + "/dw_bn4")(y1)
+        y1 = batchnorm(
+            x=y1,
+            name=name + "/dw_bn4")
         y1 = conv1x1(
+            x=y1,
+            in_channels=in_channels,
             out_channels=mid_channels,
-            name=name + "/expand_conv5")(y1)
-        y1 = GluonBatchNormalization(name=name + "/expand_bn5")(y1)
+            name=name + "/expand_conv5")
+        y1 = batchnorm(
+            x=y1,
+            name=name + "/expand_bn5")
         y1 = nn.Activation("relu", name=name + "/expand_activ5")(y1)
         x2 = x
     else:
         in_split2_channels = in_channels // 2
-        y1 = nn.Lambda(lambda z: z[:, 0:in_split2_channels, :, :])(x)
-        x2 = nn.Lambda(lambda z: z[:, in_split2_channels:, :, :])(x)
+        if is_channels_first():
+            y1 = nn.Lambda(lambda z: z[:, 0:in_split2_channels, :, :])(x)
+            x2 = nn.Lambda(lambda z: z[:, in_split2_channels:, :, :])(x)
+        else:
+            y1 = nn.Lambda(lambda z: z[:, :, :, 0:in_split2_channels])(x)
+            x2 = nn.Lambda(lambda z: z[:, :, :, in_split2_channels:])(x)
 
     y2 = conv1x1(
+        x=x2,
+        in_channels=(in_channels if downsample else mid_channels),
         out_channels=mid_channels,
-        name=name + "/compress_conv1")(x2)
-    y2 = GluonBatchNormalization(name=name + "/compress_bn1")(y2)
+        name=name + "/compress_conv1")
+    y2 = batchnorm(
+        x=y2,
+        name=name + "/compress_bn1")
     y2 = nn.Activation("relu", name=name + "/compress_activ1")(y2)
 
     y2 = depthwise_conv3x3(
@@ -190,12 +90,18 @@ def shuffle_unit(x,
         channels=mid_channels,
         strides=(2 if downsample else 1),
         name=name + "/dw_conv2")
-    y2 = GluonBatchNormalization(name=name + "/dw_bn2")(y2)
+    y2 = batchnorm(
+        x=y2,
+        name=name + "/dw_bn2")
 
     y2 = conv1x1(
+        x=y2,
+        in_channels=mid_channels,
         out_channels=mid_channels,
-        name=name + "/expand_conv3")(y2)
-    y2 = GluonBatchNormalization(name=name + "/expand_bn3")(y2)
+        name=name + "/expand_conv3")
+    y2 = batchnorm(
+        x=y2,
+        name=name + "/expand_bn3")
     y2 = nn.Activation("relu", name=name + "/expand_activ3")(y2)
 
     if use_se:
@@ -207,8 +113,7 @@ def shuffle_unit(x,
     if use_residual and not downsample:
         y2 = nn.add([y2, x2], name=name + "/add")
 
-    channel_axis = 1 if K.image_data_format() == 'channels_first' else -1
-    x = nn.concatenate([y1, y2], axis=channel_axis, name=name + "/concat")
+    x = nn.concatenate([y1, y2], axis=get_channel_axis(), name=name + "/concat")
 
     x = channel_shuffle_lambda(
         channels=out_channels,
@@ -241,19 +146,18 @@ def shuffle_init_block(x,
     keras.backend tensor/variable/symbol
         Resulted tensor/variable/symbol.
     """
-    x = shuffle_conv(
+    x = conv3x3_block(
         x=x,
         in_channels=in_channels,
         out_channels=out_channels,
-        kernel_size=3,
         strides=2,
-        padding=1,
         name=name + "/conv")
-    x = max_pool2d_ceil(
+    x = maxpool2d(
         x=x,
         pool_size=3,
         strides=2,
-        padding="valid",
+        padding=0,
+        ceil_mode=True,
         name=name + "/pool")
     return x
 
@@ -289,7 +193,7 @@ def shufflenetv2(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
     x = shuffle_init_block(
@@ -310,7 +214,7 @@ def shufflenetv2(channels,
                 use_residual=use_residual,
                 name="features/stage{}/unit{}".format(i + 1, j + 1))
             in_channels = out_channels
-    x = shuffle_conv1x1(
+    x = conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=final_block_channels,
@@ -321,7 +225,8 @@ def shufflenetv2(channels,
         strides=1,
         name="features/final_pool")(x)
 
-    x = nn.Flatten()(x)
+    # x = nn.Flatten()(x)
+    x = flatten(x)
     x = nn.Dense(
         units=classes,
         input_dim=in_channels,
@@ -374,11 +279,11 @@ def get_shufflenetv2(width_scale,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -467,7 +372,10 @@ def _test():
         assert (model != shufflenetv2_w3d2 or weight_count == 4406098)
         assert (model != shufflenetv2_w2 or weight_count == 7601686)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

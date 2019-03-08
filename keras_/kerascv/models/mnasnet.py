@@ -6,10 +6,9 @@
 __all__ = ['mnasnet_model', 'mnasnet']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import conv2d, GluonBatchNormalization
+from .common import conv2d, batchnorm, is_channels_first, flatten
 
 
 def conv_block(x,
@@ -60,7 +59,9 @@ def conv_block(x,
         groups=groups,
         use_bias=False,
         name=name + "/conv")
-    x = GluonBatchNormalization(name=name + "/bn")(x)
+    x = batchnorm(
+        x=x,
+        name=name + "/bn")
     if activate:
         x = nn.Activation("relu", name=name + "/activ")(x)
     return x
@@ -323,7 +324,7 @@ def mnasnet_model(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
     x = mnas_init_block(
@@ -360,7 +361,8 @@ def mnasnet_model(channels,
         strides=1,
         name="features/final_pool")(x)
 
-    x = nn.Flatten()(x)
+    # x = nn.Flatten()(x)
+    x = flatten(x)
     x = nn.Dense(
         units=classes,
         input_dim=in_channels,
@@ -417,11 +419,11 @@ def get_mnasnet(model_name=None,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -458,7 +460,10 @@ def _test():
         print("m={}, {}".format(model.__name__, weight_count))
         assert (model != mnasnet or weight_count == 4308816)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

@@ -9,81 +9,10 @@ __all__ = ['shufflenet', 'shufflenet_g1_w1', 'shufflenet_g2_w1', 'shufflenet_g3_
            'shufflenet_g1_wd4', 'shufflenet_g3_wd4']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import conv2d, channel_shuffle_lambda, GluonBatchNormalization
-
-
-def depthwise_conv3x3(x,
-                      channels,
-                      strides,
-                      name="depthwise_conv3x3"):
-    """
-    Depthwise convolution 3x3 layer.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    channels : int
-        Number of input/output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    name : str, default 'depthwise_conv3x3'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return conv2d(
-        x=x,
-        in_channels=channels,
-        out_channels=channels,
-        kernel_size=3,
-        strides=strides,
-        padding=1,
-        groups=channels,
-        use_bias=False,
-        name=name)
-
-
-def group_conv1x1(x,
-                  in_channels,
-                  out_channels,
-                  groups,
-                  name="group_conv1x1"):
-    """
-    Group convolution 1x1 layer.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    groups : int
-        Number of groups.
-    name : str, default 'group_conv1x1'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        groups=groups,
-        use_bias=False,
-        name=name)
+from .common import conv1x1, conv3x3, depthwise_conv3x3, channel_shuffle_lambda, batchnorm, maxpool2d, avgpool2d,\
+    is_channels_first, get_channel_axis, flatten
 
 
 def shuffle_unit(x,
@@ -125,13 +54,15 @@ def shuffle_unit(x,
 
     identity = x
 
-    x = group_conv1x1(
+    x = conv1x1(
         x=x,
         in_channels=in_channels,
         out_channels=mid_channels,
         groups=(1 if ignore_group else groups),
         name=name + "/compress_conv1")
-    x = GluonBatchNormalization(name=name + "/compress_bn1")(x)
+    x = batchnorm(
+        x=x,
+        name=name + "/compress_bn1")
     x = nn.Activation("relu", name=name + "/activ")(x)
 
     x = channel_shuffle_lambda(
@@ -144,27 +75,28 @@ def shuffle_unit(x,
         channels=mid_channels,
         strides=(2 if downsample else 1),
         name=name + "/dw_conv2")
-    x = GluonBatchNormalization(name=name + "/dw_bn2")(x)
+    x = batchnorm(
+        x=x,
+        name=name + "/dw_bn2")
 
-    x = group_conv1x1(
+    x = conv1x1(
         x=x,
         in_channels=mid_channels,
         out_channels=out_channels,
         groups=groups,
         name=name + "/expand_conv3")
-    x = GluonBatchNormalization(name=name + "/expand_bn3")(x)
-
-    x._keras_shape = tuple([d if d != 0 else None for d in x.shape])
+    x = batchnorm(
+        x=x,
+        name=name + "/expand_bn3")
 
     if downsample:
-        identity = nn.AvgPool2D(
+        identity = avgpool2d(
+            x=identity,
             pool_size=3,
             strides=2,
-            padding="same",
-            name=name + "/avgpool")(identity)
-
-        channel_axis = 1 if K.image_data_format() == 'channels_first' else -1
-        x = nn.concatenate([x, identity], axis=channel_axis, name=name + "/concat")
+            padding=1,
+            name=name + "/avgpool")
+        x = nn.concatenate([x, identity], axis=get_channel_axis(), name=name + "/concat")
     else:
         x = nn.add([x, identity], name=name + "/add")
 
@@ -195,22 +127,22 @@ def shuffle_init_block(x,
     keras.backend tensor/variable/symbol
         Resulted tensor/variable/symbol.
     """
-    x = conv2d(
+    x = conv3x3(
         x=x,
         in_channels=in_channels,
         out_channels=out_channels,
-        kernel_size=3,
         strides=2,
-        padding=1,
-        use_bias=False,
         name=name + "/conv")
-    x = GluonBatchNormalization(name=name + "/bn")(x)
+    x = batchnorm(
+        x=x,
+        name=name + "/bn")
     x = nn.Activation("relu", name=name + "/activ")(x)
-    x = nn.MaxPool2D(
+    x = maxpool2d(
+        x=x,
         pool_size=3,
         strides=2,
-        padding="same",
-        name=name + "/pool")(x)
+        padding=1,
+        name=name + "/pool")
     return x
 
 
@@ -239,7 +171,7 @@ def shufflenet(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
     x = shuffle_init_block(
@@ -266,7 +198,7 @@ def shufflenet(channels,
         strides=1,
         name="features/final_pool")(x)
 
-    x = nn.Flatten()(x)
+    x = flatten(x)
     x = nn.Dense(
         units=classes,
         input_dim=in_channels,
@@ -332,11 +264,11 @@ def get_shufflenet(groups,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -544,7 +476,10 @@ def _test():
         assert (model != shufflenet_g1_wd4 or weight_count == 209746)
         assert (model != shufflenet_g3_wd4 or weight_count == 305902)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

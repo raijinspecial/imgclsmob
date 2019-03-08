@@ -10,60 +10,9 @@ __all__ = ['mobilenet', 'mobilenet_w1', 'mobilenet_w3d4', 'mobilenet_wd2', 'mobi
            'fdmobilenet_w3d4', 'fdmobilenet_wd2', 'fdmobilenet_wd4']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import conv2d, GluonBatchNormalization
-
-
-def conv_block(x,
-               in_channels,
-               out_channels,
-               kernel_size,
-               strides=1,
-               padding=0,
-               groups=1,
-               name="conv_block"):
-    """
-    Standard enough convolution block with BatchNorm and activation.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    groups : int, default 1
-        Number of groups.
-    name : str, default 'conv_block'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=kernel_size,
-        strides=strides,
-        padding=padding,
-        groups=groups,
-        use_bias=False,
-        name=name + "/conv")
-    x = GluonBatchNormalization(name=name + "/bn")(x)
-    x = nn.Activation("relu", name=name + "/activ")(x)
-    return x
+from .common import conv1x1_block, conv3x3_block, dwconv3x3_block, is_channels_first, flatten
 
 
 def dws_conv_block(x,
@@ -93,20 +42,16 @@ def dws_conv_block(x,
     keras.backend tensor/variable/symbol
         Resulted tensor/variable/symbol.
     """
-    x = conv_block(
+    x = dwconv3x3_block(
         x=x,
         in_channels=in_channels,
         out_channels=in_channels,
-        kernel_size=3,
         strides=strides,
-        padding=1,
-        groups=in_channels,
         name=name + "/dw_conv")
-    x = conv_block(
+    x = conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=out_channels,
-        kernel_size=1,
         name=name + "/pw_conv")
     return x
 
@@ -134,17 +79,15 @@ def mobilenet(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
     init_block_channels = channels[0][0]
-    x = conv_block(
+    x = conv3x3_block(
         x=input,
         in_channels=in_channels,
         out_channels=init_block_channels,
-        kernel_size=3,
         strides=2,
-        padding=1,
         name="features/init_block")
     in_channels = init_block_channels
     for i, channels_per_stage in enumerate(channels[1:]):
@@ -162,7 +105,8 @@ def mobilenet(channels,
         strides=1,
         name="features/final_pool")(x)
 
-    x = nn.Flatten()(x)
+    # x = nn.Flatten()(x)
+    x = flatten(x)
     x = nn.Dense(
         units=classes,
         input_dim=in_channels,
@@ -217,11 +161,11 @@ def get_mobilenet(version,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -378,7 +322,10 @@ def _test():
         assert (model != fdmobilenet_wd2 or weight_count == 993928)
         assert (model != fdmobilenet_wd4 or weight_count == 383160)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

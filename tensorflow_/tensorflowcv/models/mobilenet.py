@@ -11,63 +11,7 @@ __all__ = ['MobileNet', 'mobilenet_w1', 'mobilenet_w3d4', 'mobilenet_wd2', 'mobi
 
 import os
 import tensorflow as tf
-from .common import conv2d, batchnorm
-
-
-def conv_block(x,
-               in_channels,
-               out_channels,
-               kernel_size,
-               strides=1,
-               padding=0,
-               groups=1,
-               training=False,
-               name="conv_block"):
-    """
-    Standard enough convolution block with BatchNorm and activation.
-
-    Parameters:
-    ----------
-    x : Tensor
-        Input tensor.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    groups : int, default 1
-        Number of groups.
-    training : bool, or a TensorFlow boolean scalar tensor, default False
-      Whether to return the output in training mode or in inference mode.
-    name : str, default 'conv_block'
-        Block name.
-
-    Returns
-    -------
-    Tensor
-        Resulted tensor.
-    """
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=kernel_size,
-        strides=strides,
-        padding=padding,
-        groups=groups,
-        use_bias=False,
-        name=name + "/conv")
-    x = batchnorm(
-        x=x,
-        training=training,
-        name=name + "/bn")
-    x = tf.nn.relu(x, name=name + "/activ")
-    return x
+from .common import conv1x1_block, conv3x3_block, dwconv3x3_block, is_channels_first, flatten
 
 
 def dws_conv_block(x,
@@ -75,6 +19,7 @@ def dws_conv_block(x,
                    out_channels,
                    strides,
                    training,
+                   data_format,
                    name="dws_conv_block"):
     """
     Depthwise separable convolution block with BatchNorms and activations at each convolution layers. It is used as
@@ -92,6 +37,8 @@ def dws_conv_block(x,
         Strides of the convolution.
     training : bool, or a TensorFlow boolean scalar tensor
       Whether to return the output in training mode or in inference mode.
+    data_format : str
+        The ordering of the dimensions in tensors.
     name : str, default 'dws_conv_block'
         Block name.
 
@@ -100,22 +47,20 @@ def dws_conv_block(x,
     Tensor
         Resulted tensor.
     """
-    x = conv_block(
+    x = dwconv3x3_block(
         x=x,
         in_channels=in_channels,
         out_channels=in_channels,
-        kernel_size=3,
         strides=strides,
-        padding=1,
-        groups=in_channels,
         training=training,
+        data_format=data_format,
         name=name + "/dw_conv")
-    x = conv_block(
+    x = conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=out_channels,
-        kernel_size=1,
         training=training,
+        data_format=data_format,
         name=name + "/pw_conv")
     return x
 
@@ -138,6 +83,8 @@ class MobileNet(object):
         Spatial size of the expected input image.
     classes : int, default 1000
         Number of classification classes.
+    data_format : str, default 'channels_last'
+        The ordering of the dimensions in tensors.
     """
     def __init__(self,
                  channels,
@@ -145,13 +92,16 @@ class MobileNet(object):
                  in_channels=3,
                  in_size=(224, 224),
                  classes=1000,
+                 data_format="channels_last",
                  **kwargs):
         super(MobileNet, self).__init__(**kwargs)
+        assert (data_format in ["channels_last", "channels_first"])
         self.channels = channels
         self.first_stage_stride = first_stage_stride
         self.in_channels = in_channels
         self.in_size = in_size
         self.classes = classes
+        self.data_format = data_format
 
     def __call__(self,
                  x,
@@ -173,14 +123,13 @@ class MobileNet(object):
         """
         in_channels = self.in_channels
         init_block_channels = self.channels[0][0]
-        x = conv_block(
+        x = conv3x3_block(
             x=x,
             in_channels=in_channels,
             out_channels=init_block_channels,
-            kernel_size=3,
             strides=2,
-            padding=1,
             training=training,
+            data_format=self.data_format,
             name="features/init_block")
         in_channels = init_block_channels
         for i, channels_per_stage in enumerate(self.channels[1:]):
@@ -192,16 +141,20 @@ class MobileNet(object):
                     out_channels=out_channels,
                     strides=strides,
                     training=training,
+                    data_format=self.data_format,
                     name="features/stage{}/unit{}".format(i + 1, j + 1))
                 in_channels = out_channels
         x = tf.layers.average_pooling2d(
             inputs=x,
             pool_size=7,
             strides=1,
-            data_format='channels_first',
+            data_format=self.data_format,
             name="features/final_pool")
 
-        x = tf.layers.flatten(x)
+        # x = tf.layers.flatten(x)
+        x = flatten(
+            x=x,
+            data_format=self.data_format)
         x = tf.layers.dense(
             inputs=x,
             units=self.classes,
@@ -431,8 +384,8 @@ def fdmobilenet_wd4(**kwargs):
 
 def _test():
     import numpy as np
-    from .model_store import init_variables_from_state_dict
 
+    data_format = "channels_last"
     pretrained = False
 
     models = [
@@ -448,11 +401,11 @@ def _test():
 
     for model in models:
 
-        net = model(pretrained=pretrained)
+        net = model(pretrained=pretrained, data_format=data_format)
         x = tf.placeholder(
             dtype=tf.float32,
-            shape=(None, 3, 224, 224),
-            name='xx')
+            shape=(None, 3, 224, 224) if is_channels_first(data_format) else (None, 224, 224, 3),
+            name="xx")
         y_net = net(x)
 
         weight_count = np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])
@@ -468,10 +421,11 @@ def _test():
 
         with tf.Session() as sess:
             if pretrained:
+                from .model_store import init_variables_from_state_dict
                 init_variables_from_state_dict(sess=sess, state_dict=net.state_dict)
             else:
                 sess.run(tf.global_variables_initializer())
-            x_value = np.zeros((1, 3, 224, 224), np.float32)
+            x_value = np.zeros((1, 3, 224, 224) if is_channels_first(data_format) else (1, 224, 224, 3), np.float32)
             y = sess.run(y_net, feed_dict={x: x_value})
             assert (y.shape == (1, 1000))
         tf.reset_default_graph()

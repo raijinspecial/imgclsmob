@@ -4,8 +4,7 @@
     https://arxiv.org/abs/1807.11164.
 """
 
-__all__ = ['ShuffleNetV2b', 'shufflenetv2b_wd2', 'shufflenetv2b_w1', 'shufflenetv2b_w3d2', 'shufflenetv2b_w2',
-           'shufflenetv2c_wd2', 'shufflenetv2c_w1']
+__all__ = ['ShuffleNetV2b', 'shufflenetv2b_wd2', 'shufflenetv2b_w1', 'shufflenetv2b_w3d2', 'shufflenetv2b_w2']
 
 import os
 import chainer.functions as F
@@ -13,105 +12,8 @@ import chainer.links as L
 from chainer import Chain
 from functools import partial
 from chainer.serializers import load_npz
-from .common import SimpleSequential, ChannelShuffle, ChannelShuffle2, SEBlock
-
-
-class ShuffleConv(Chain):
-    """
-    ShuffleNetV2(b) specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    ksize : int or tuple/list of 2 int
-        Convolution window size.
-    stride : int or tuple/list of 2 int
-        Stride of the convolution.
-    pad : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 ksize,
-                 stride,
-                 pad):
-        super(ShuffleConv, self).__init__()
-        with self.init_scope():
-            self.conv = L.Convolution2D(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                ksize=ksize,
-                stride=stride,
-                pad=pad,
-                nobias=True)
-            self.bn = L.BatchNormalization(
-                size=out_channels,
-                eps=1e-5)
-            self.activ = F.relu
-
-    def __call__(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.activ(x)
-        return x
-
-
-def shuffle_conv1x1(in_channels,
-                    out_channels):
-    """
-    1x1 version of the ShuffleNetV2(b) specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    """
-    return ShuffleConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        ksize=1,
-        stride=1,
-        pad=0)
-
-
-class ShuffleDwConv3x3(Chain):
-    """
-    ShuffleNetV2(b) specific depthwise convolution 3x3 layer.
-
-    Parameters:
-    ----------
-    channels : int
-        Number of input/output channels.
-    stride : int or tuple/list of 2 int
-        Stride of the convolution.
-    """
-    def __init__(self,
-                 channels,
-                 stride):
-        super(ShuffleDwConv3x3, self).__init__()
-        with self.init_scope():
-            self.conv = L.Convolution2D(
-                in_channels=channels,
-                out_channels=channels,
-                ksize=3,
-                stride=stride,
-                pad=1,
-                nobias=True,
-                groups=channels)
-            self.bn = L.BatchNormalization(
-                size=channels,
-                eps=1e-5)
-
-    def __call__(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        return x
+from .common import conv1x1_block, conv3x3_block, dwconv3x3_block, ChannelShuffle, ChannelShuffle2, SEBlock,\
+    SimpleSequential
 
 
 class ShuffleUnit(Chain):
@@ -152,22 +54,28 @@ class ShuffleUnit(Chain):
         y2_out_channels = out_channels - y2_in_channels
 
         with self.init_scope():
-            self.conv1 = shuffle_conv1x1(
+            self.conv1 = conv1x1_block(
                 in_channels=y2_in_channels,
                 out_channels=mid_channels)
-            self.dconv = ShuffleDwConv3x3(
-                channels=mid_channels,
-                stride=(2 if self.downsample else 1))
-            self.conv2 = shuffle_conv1x1(
+            self.dconv = dwconv3x3_block(
+                in_channels=mid_channels,
+                out_channels=mid_channels,
+                stride=(2 if self.downsample else 1),
+                activation=None,
+                activate=False)
+            self.conv2 = conv1x1_block(
                 in_channels=mid_channels,
                 out_channels=y2_out_channels)
             if self.use_se:
                 self.se = SEBlock(channels=y2_out_channels)
             if downsample:
-                self.shortcut_dconv = ShuffleDwConv3x3(
-                    channels=in_channels,
-                    stride=2)
-                self.shortcut_conv = shuffle_conv1x1(
+                self.shortcut_dconv = dwconv3x3_block(
+                    in_channels=in_channels,
+                    out_channels=in_channels,
+                    stride=2,
+                    activation=None,
+                    activate=False)
+                self.shortcut_conv = conv1x1_block(
                     in_channels=in_channels,
                     out_channels=in_channels)
 
@@ -215,12 +123,10 @@ class ShuffleInitBlock(Chain):
                  out_channels):
         super(ShuffleInitBlock, self).__init__()
         with self.init_scope():
-            self.conv = ShuffleConv(
+            self.conv = conv3x3_block(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                ksize=3,
-                stride=2,
-                pad=1)
+                stride=2)
             self.pool = partial(
                 F.max_pooling_2d,
                 ksize=3,
@@ -295,7 +201,7 @@ class ShuffleNetV2b(Chain):
                                 shuffle_group_first=shuffle_group_first))
                             in_channels = out_channels
                     setattr(self.features, "stage{}".format(i + 1), stage)
-                setattr(self.features, 'final_block', shuffle_conv1x1(
+                setattr(self.features, 'final_block', conv1x1_block(
                     in_channels=in_channels,
                     out_channels=final_block_channels))
                 in_channels = final_block_channels
@@ -450,44 +356,6 @@ def shufflenetv2b_w2(**kwargs):
         **kwargs)
 
 
-def shufflenetv2c_wd2(**kwargs):
-    """
-    ShuffleNetV2(c) 0.5x model from 'ShuffleNet V2: Practical Guidelines for Efficient CNN Architecture Design,'
-    https://arxiv.org/abs/1807.11164.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.chainer/models'
-        Location for keeping the model parameters.
-    """
-    return get_shufflenetv2b(
-        width_scale=(12.0 / 29.0),
-        shuffle_group_first=False,
-        model_name="shufflenetv2c_wd2",
-        **kwargs)
-
-
-def shufflenetv2c_w1(**kwargs):
-    """
-    ShuffleNetV2(c) 1x model from 'ShuffleNet V2: Practical Guidelines for Efficient CNN Architecture Design,'
-    https://arxiv.org/abs/1807.11164.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.chainer/models'
-        Location for keeping the model parameters.
-    """
-    return get_shufflenetv2b(
-        width_scale=1.0,
-        shuffle_group_first=False,
-        model_name="shufflenetv2c_w1",
-        **kwargs)
-
-
 def _test():
     import numpy as np
     import chainer
@@ -497,12 +365,10 @@ def _test():
     pretrained = False
 
     models = [
-        # shufflenetv2b_wd2,
-        # shufflenetv2b_w1,
-        # shufflenetv2b_w3d2,
-        # shufflenetv2b_w2,
-        shufflenetv2c_wd2,
-        # shufflenetv2c_w1,
+        shufflenetv2b_wd2,
+        shufflenetv2b_w1,
+        shufflenetv2b_w3d2,
+        shufflenetv2b_w2,
     ]
 
     for model in models:
@@ -514,8 +380,6 @@ def _test():
         assert (model != shufflenetv2b_w1 or weight_count == 2279760)
         assert (model != shufflenetv2b_w3d2 or weight_count == 4410194)
         assert (model != shufflenetv2b_w2 or weight_count == 7611290)
-        assert (model != shufflenetv2c_wd2 or weight_count == 1366792)
-        assert (model != shufflenetv2c_w1 or weight_count == 2279760)
 
         x = np.zeros((1, 3, 224, 224), np.float32)
         y = net(x)

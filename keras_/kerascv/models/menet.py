@@ -8,118 +8,10 @@ __all__ = ['menet', 'menet108_8x1_g3', 'menet128_8x1_g4', 'menet160_8x1_g8', 'me
            'menet348_12x1_g3', 'menet352_12x1_g8', 'menet456_24x1_g3']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import conv2d, conv1x1, channel_shuffle_lambda, GluonBatchNormalization
-
-
-def depthwise_conv3x3(x,
-                      channels,
-                      strides,
-                      name="depthwise_conv3x3"):
-    """
-    Depthwise convolution 3x3 layer. This is exactly the same layer as in ShuffleNet.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    channels : int
-        Number of input/output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    name : str, default 'depthwise_conv3x3'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return conv2d(
-        x=x,
-        in_channels=channels,
-        out_channels=channels,
-        kernel_size=3,
-        strides=strides,
-        padding=1,
-        groups=channels,
-        use_bias=False,
-        name=name)
-
-
-def group_conv1x1(x,
-                  in_channels,
-                  out_channels,
-                  groups,
-                  name="group_conv1x1"):
-    """
-    Group convolution 1x1 layer. This is exactly the same layer as in ShuffleNet.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    groups : int
-        Number of groups.
-    name : str, default 'depthwise_conv3x3'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        groups=groups,
-        use_bias=False,
-        name=name)
-
-
-def conv3x3(x,
-            in_channels,
-            out_channels,
-            strides,
-            name="conv3x3"):
-    """
-    Convolution 3x3 layer.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    name : str, default 'conv3x3'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        strides=strides,
-        padding=1,
-        use_bias=False,
-        name=name)
+from .common import conv2d, conv1x1, conv3x3, depthwise_conv3x3, channel_shuffle_lambda, batchnorm, maxpool2d,\
+    avgpool2d, is_channels_first, get_channel_axis, flatten
 
 
 def me_unit(x,
@@ -165,13 +57,15 @@ def me_unit(x,
     identity = x
 
     # pointwise group convolution 1
-    x = group_conv1x1(
+    x = conv1x1(
         x=x,
         in_channels=in_channels,
         out_channels=mid_channels,
         groups=(1 if ignore_group else groups),
         name=name + "/compress_conv1")
-    x = GluonBatchNormalization(name=name + "/compress_bn1")(x)
+    x = batchnorm(
+        x=x,
+        name=name + "/compress_bn1")
     x = nn.Activation("relu", name=name + "/compress_activ")(x)
 
     x = channel_shuffle_lambda(
@@ -181,9 +75,13 @@ def me_unit(x,
 
     # merging
     y = conv1x1(
+        x=x,
+        in_channels=mid_channels,
         out_channels=side_channels,
-        name=name + "/s_merge_conv")(x)
-    y = GluonBatchNormalization(name=name + "/s_merge_bn")(y)
+        name=name + "/s_merge_conv")
+    y = batchnorm(
+        x=y,
+        name=name + "/s_merge_bn")
     y = nn.Activation("relu", name=name + "/s_merge_activ")(y)
 
     # depthwise convolution (bottleneck)
@@ -192,7 +90,9 @@ def me_unit(x,
         channels=mid_channels,
         strides=(2 if downsample else 1),
         name=name + "/dw_conv2")
-    x = GluonBatchNormalization(name=name + "/dw_bn2")(x)
+    x = batchnorm(
+        x=x,
+        name=name + "/dw_bn2")
 
     # evolution
     y = conv3x3(
@@ -201,37 +101,42 @@ def me_unit(x,
         out_channels=side_channels,
         strides=(2 if downsample else 1),
         name=name + "/s_conv")
-    y = GluonBatchNormalization(name=name + "/s_conv_bn")(y)
+    y = batchnorm(
+        x=y,
+        name=name + "/s_conv_bn")
     y = nn.Activation("relu", name=name + "/s_conv_activ")(y)
 
     y = conv1x1(
+        x=y,
+        in_channels=side_channels,
         out_channels=mid_channels,
-        name=name + "/s_evolve_conv")(y)
-    y = GluonBatchNormalization(name=name + "/s_evolve_bn")(y)
+        name=name + "/s_evolve_conv")
+    y = batchnorm(
+        x=y,
+        name=name + "/s_evolve_bn")
     y = nn.Activation('sigmoid', name=name + "/s_evolve_activ")(y)
 
     x = nn.multiply([x, y], name=name + "/mul")
 
     # pointwise group convolution 2
-    x = group_conv1x1(
+    x = conv1x1(
         x=x,
         in_channels=mid_channels,
         out_channels=out_channels,
         groups=groups,
         name=name + "/expand_conv3")
-    x = GluonBatchNormalization(name=name + "/expand_bn3")(x)
-
-    x._keras_shape = tuple([d if d != 0 else None for d in x.shape])
+    x = batchnorm(
+        x=x,
+        name=name + "/expand_bn3")
 
     if downsample:
-        identity = nn.AvgPool2D(
+        identity = avgpool2d(
+            x=identity,
             pool_size=3,
             strides=2,
-            padding="same",
-            name=name + "/avgpool")(identity)
-
-        channel_axis = 1 if K.image_data_format() == 'channels_first' else -1
-        x = nn.concatenate([x, identity], axis=channel_axis, name=name + "/concat")
+            padding=1,
+            name=name + "/avgpool")
+        x = nn.concatenate([x, identity], axis=get_channel_axis(), name=name + "/concat")
     else:
         x = nn.add([x, identity], name=name + "/add")
 
@@ -254,7 +159,7 @@ def me_init_block(x,
         Number of input channels.
     out_channels : int
         Number of output channels.
-    name : str, default 'shuffle_init_block'
+    name : str, default 'me_init_block'
         Block name.
 
     Returns
@@ -271,13 +176,16 @@ def me_init_block(x,
         padding=1,
         use_bias=False,
         name=name + "/conv")
-    x = GluonBatchNormalization(name=name + "/bn")(x)
+    x = batchnorm(
+        x=x,
+        name=name + "/bn")
     x = nn.Activation("relu", name=name + "/activ")(x)
-    x = nn.MaxPool2D(
+    x = maxpool2d(
+        x=x,
         pool_size=3,
         strides=2,
-        padding="same",
-        name=name + "/pool")(x)
+        padding=1,
+        name=name + "/pool")
     return x
 
 
@@ -309,7 +217,7 @@ def menet(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
     x = me_init_block(
@@ -337,7 +245,7 @@ def menet(channels,
         strides=1,
         name="features/final_pool")(x)
 
-    x = nn.Flatten()(x)
+    x = flatten(x)
     x = nn.Dense(
         units=classes,
         input_dim=in_channels,
@@ -416,11 +324,11 @@ def get_menet(first_stage_channels,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -577,7 +485,10 @@ def _test():
         assert (model != menet352_12x1_g8 or weight_count == 2272872)
         assert (model != menet456_24x1_g3 or weight_count == 5304784)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

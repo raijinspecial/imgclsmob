@@ -1,152 +1,17 @@
 """
-    PreResNet & SE-PreResNet, implemented in TensorFlow.
-    Original papers:
-    - 'Identity Mappings in Deep Residual Networks,' https://arxiv.org/abs/1603.05027.
-    - 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
+    PreResNet, implemented in TensorFlow.
+    Original paper: 'Identity Mappings in Deep Residual Networks,' https://arxiv.org/abs/1603.05027.
 """
 
 __all__ = ['PreResNet', 'preresnet10', 'preresnet12', 'preresnet14', 'preresnet16', 'preresnet18_wd4',
            'preresnet18_wd2', 'preresnet18_w3d4', 'preresnet18', 'preresnet34', 'preresnet50', 'preresnet50b',
            'preresnet101', 'preresnet101b', 'preresnet152', 'preresnet152b', 'preresnet200', 'preresnet200b',
-           'sepreresnet18', 'sepreresnet34', 'sepreresnet50', 'sepreresnet50b', 'sepreresnet101', 'sepreresnet101b',
-           'sepreresnet152', 'sepreresnet152b', 'sepreresnet200', 'sepreresnet200b']
+           'preresnet269b', 'preres_block', 'preres_bottleneck_block', 'preres_init_block', 'preres_activation']
 
 import os
 import tensorflow as tf
-from .common import conv2d, conv1x1, batchnorm, maxpool2d, se_block
-
-
-def preres_conv(x,
-                in_channels,
-                out_channels,
-                kernel_size,
-                strides,
-                padding,
-                training,
-                name="preres_conv"):
-    """
-    PreResNet specific convolution block, with pre-activation.
-
-    Parameters:
-    ----------
-    x : Tensor
-        Input tensor.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    training : bool, or a TensorFlow boolean scalar tensor
-      Whether to return the output in training mode or in inference mode.
-    name : str, default 'preres_conv'
-        Block name.
-
-    Returns
-    -------
-    tuple of two Tensors
-        Resulted tensor and preactivated input tensor.
-    """
-    x = batchnorm(
-        x=x,
-        training=training,
-        name=name + "/bn")
-    x = tf.nn.relu(x, name=name + "/activ")
-    x_pre_activ = x
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=kernel_size,
-        strides=strides,
-        padding=padding,
-        use_bias=False,
-        name=name + "/conv")
-    return x, x_pre_activ
-
-
-def preres_conv1x1(x,
-                   in_channels,
-                   out_channels,
-                   strides,
-                   training,
-                   name="preres_conv1x1"):
-    """
-    1x1 version of the PreResNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : Tensor
-        Input tensor.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    training : bool, or a TensorFlow boolean scalar tensor
-      Whether to return the output in training mode or in inference mode.
-    name : str, default 'preres_conv1x1'
-        Block name.
-
-    Returns
-    -------
-    tuple of two Tensors
-        Resulted tensor and preactivated input tensor.
-    """
-    return preres_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        strides=strides,
-        padding=0,
-        training=training,
-        name=name)
-
-
-def preres_conv3x3(x,
-                   in_channels,
-                   out_channels,
-                   strides,
-                   training,
-                   name="preres_conv3x3"):
-    """
-    3x3 version of the PreResNet specific convolution block.
-
-    Parameters:
-    ----------
-    x : Tensor
-        Input tensor.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    training : bool, or a TensorFlow boolean scalar tensor
-      Whether to return the output in training mode or in inference mode.
-    name : str, default 'preres_conv3x3'
-        Block name.
-
-    Returns
-    -------
-    tuple of two Tensors
-        Resulted tensor and preactivated input tensor.
-    """
-    return preres_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        strides=strides,
-        padding=1,
-        training=training,
-        name=name)
+from .common import pre_conv1x1_block, pre_conv3x3_block, conv2d, conv1x1, batchnorm, maxpool2d, is_channels_first,\
+    flatten
 
 
 def preres_block(x,
@@ -154,6 +19,7 @@ def preres_block(x,
                  out_channels,
                  strides,
                  training,
+                 data_format,
                  name="preres_block"):
     """
     Simple PreResNet block for residual path in PreResNet unit.
@@ -170,6 +36,8 @@ def preres_block(x,
         Strides of the convolution.
     training : bool, or a TensorFlow boolean scalar tensor
       Whether to return the output in training mode or in inference mode.
+    data_format : str
+        The ordering of the dimensions in tensors.
     name : str, default 'preres_block'
         Block name.
 
@@ -178,19 +46,21 @@ def preres_block(x,
     tuple of two Tensors
         Resulted tensor and preactivated input tensor.
     """
-    x, x_pre_activ = preres_conv3x3(
+    x, x_pre_activ = pre_conv3x3_block(
         x=x,
         in_channels=in_channels,
         out_channels=out_channels,
         strides=strides,
+        return_preact=True,
         training=training,
+        data_format=data_format,
         name=name + "/conv1")
-    x, _ = preres_conv3x3(
+    x = pre_conv3x3_block(
         x=x,
         in_channels=in_channels,
         out_channels=out_channels,
-        strides=1,
         training=training,
+        data_format=data_format,
         name=name + "/conv2")
     return x, x_pre_activ
 
@@ -201,6 +71,7 @@ def preres_bottleneck_block(x,
                             strides,
                             conv1_stride,
                             training,
+                            data_format,
                             name="preres_bottleneck_block"):
     """
     PreResNet bottleneck block for residual path in PreResNet unit.
@@ -219,6 +90,8 @@ def preres_bottleneck_block(x,
         Whether to use stride in the first or the second convolution layer of the block.
     training : bool, or a TensorFlow boolean scalar tensor
       Whether to return the output in training mode or in inference mode.
+    data_format : str
+        The ordering of the dimensions in tensors.
     name : str, default 'preres_bottleneck_block'
         Block name.
 
@@ -229,26 +102,29 @@ def preres_bottleneck_block(x,
     """
     mid_channels = out_channels // 4
 
-    x, x_pre_activ = preres_conv1x1(
+    x, x_pre_activ = pre_conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=mid_channels,
         strides=(strides if conv1_stride else 1),
+        return_preact=True,
         training=training,
+        data_format=data_format,
         name=name + "/conv1")
-    x, _ = preres_conv3x3(
+    x = pre_conv3x3_block(
         x=x,
         in_channels=in_channels,
         out_channels=mid_channels,
         strides=(1 if conv1_stride else strides),
         training=training,
+        data_format=data_format,
         name=name + "/conv2")
-    x, _ = preres_conv1x1(
+    x = pre_conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=out_channels,
-        strides=1,
         training=training,
+        data_format=data_format,
         name=name + "/conv3")
     return x, x_pre_activ
 
@@ -259,11 +135,11 @@ def preres_unit(x,
                 strides,
                 bottleneck,
                 conv1_stride,
-                use_se,
                 training,
+                data_format,
                 name="preres_unit"):
     """
-    ResNet unit with residual connection.
+    PreResNet unit with residual connection.
 
     Parameters:
     ----------
@@ -279,10 +155,10 @@ def preres_unit(x,
         Whether to use a bottleneck or simple block in units.
     conv1_stride : bool
         Whether to use stride in the first or the second convolution layer of the block.
-    use_se : bool
-        Whether to use SE block.
     training : bool, or a TensorFlow boolean scalar tensor
       Whether to return the output in training mode or in inference mode.
+    data_format : str
+        The ordering of the dimensions in tensors.
     name : str, default 'preres_unit'
         Unit name.
 
@@ -301,6 +177,7 @@ def preres_unit(x,
             strides=strides,
             conv1_stride=conv1_stride,
             training=training,
+            data_format=data_format,
             name=name + "/body")
     else:
         x, x_pre_activ = preres_block(
@@ -309,13 +186,8 @@ def preres_unit(x,
             out_channels=out_channels,
             strides=strides,
             training=training,
+            data_format=data_format,
             name=name + "/body")
-
-    if use_se:
-        x = se_block(
-            x=x,
-            channels=out_channels,
-            name=name + "/se")
 
     resize_identity = (in_channels != out_channels) or (strides != 1)
     if resize_identity:
@@ -324,7 +196,8 @@ def preres_unit(x,
             in_channels=in_channels,
             out_channels=out_channels,
             strides=strides,
-            name=name + "/identity_conv")
+            data_format=data_format,
+            name=name + "/identity_conv/conv")
 
     x = x + identity
     return x
@@ -334,6 +207,7 @@ def preres_init_block(x,
                       in_channels,
                       out_channels,
                       training,
+                      data_format,
                       name="preres_init_block"):
     """
     PreResNet specific initial block.
@@ -348,6 +222,8 @@ def preres_init_block(x,
         Number of output channels.
     training : bool, or a TensorFlow boolean scalar tensor
       Whether to return the output in training mode or in inference mode.
+    data_format : str
+        The ordering of the dimensions in tensors.
     name : str, default 'preres_init_block'
         Block name.
 
@@ -364,10 +240,12 @@ def preres_init_block(x,
         strides=2,
         padding=3,
         use_bias=False,
+        data_format=data_format,
         name=name + "/conv")
     x = batchnorm(
         x=x,
         training=training,
+        data_format=data_format,
         name=name + "/bn")
     x = tf.nn.relu(x, name=name + "/activ")
     x = maxpool2d(
@@ -375,12 +253,14 @@ def preres_init_block(x,
         pool_size=3,
         strides=2,
         padding=1,
+        data_format=data_format,
         name=name + "/pool")
     return x
 
 
 def preres_activation(x,
                       training,
+                      data_format,
                       name="preres_activation"):
     """
     PreResNet pure pre-activation block without convolution layer. It's used by itself as the final block.
@@ -391,6 +271,8 @@ def preres_activation(x,
         Input tensor.
     training : bool, or a TensorFlow boolean scalar tensor
       Whether to return the output in training mode or in inference mode.
+    data_format : str
+        The ordering of the dimensions in tensors.
     name : str, default 'preres_activation'
         Block name.
 
@@ -402,6 +284,7 @@ def preres_activation(x,
     x = batchnorm(
         x=x,
         training=training,
+        data_format=data_format,
         name=name + "/bn")
     x = tf.nn.relu(x, name=name + "/activ")
     return x
@@ -409,8 +292,7 @@ def preres_activation(x,
 
 class PreResNet(object):
     """
-    PreResNet model from 'Identity Mappings in Deep Residual Networks,' https://arxiv.org/abs/1603.05027. Also this
-    class implements SE-PreResNet from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
+    PreResNet model from 'Identity Mappings in Deep Residual Networks,' https://arxiv.org/abs/1603.05027.
 
     Parameters:
     ----------
@@ -422,34 +304,35 @@ class PreResNet(object):
         Whether to use a bottleneck or simple block in units.
     conv1_stride : bool
         Whether to use stride in the first or the second convolution layer in units.
-    use_se : bool
-        Whether to use SE block.
     in_channels : int, default 3
         Number of input channels.
     in_size : tuple of two ints, default (224, 224)
         Spatial size of the expected input image.
     classes : int, default 1000
         Number of classification classes.
+    data_format : str, default 'channels_last'
+        The ordering of the dimensions in tensors.
     """
     def __init__(self,
                  channels,
                  init_block_channels,
                  bottleneck,
                  conv1_stride,
-                 use_se,
                  in_channels=3,
                  in_size=(224, 224),
                  classes=1000,
+                 data_format="channels_last",
                  **kwargs):
         super(PreResNet, self).__init__(**kwargs)
+        assert (data_format in ["channels_last", "channels_first"])
         self.channels = channels
         self.init_block_channels = init_block_channels
         self.bottleneck = bottleneck
         self.conv1_stride = conv1_stride
-        self.use_se = use_se
         self.in_channels = in_channels
         self.in_size = in_size
         self.classes = classes
+        self.data_format = data_format
 
     def __call__(self,
                  x,
@@ -475,6 +358,7 @@ class PreResNet(object):
             in_channels=in_channels,
             out_channels=self.init_block_channels,
             training=training,
+            data_format=self.data_format,
             name="features/init_block")
         in_channels = self.init_block_channels
         for i, channels_per_stage in enumerate(self.channels):
@@ -487,22 +371,26 @@ class PreResNet(object):
                     strides=strides,
                     bottleneck=self.bottleneck,
                     conv1_stride=self.conv1_stride,
-                    use_se=self.use_se,
                     training=training,
+                    data_format=self.data_format,
                     name="features/stage{}/unit{}".format(i + 1, j + 1))
                 in_channels = out_channels
         x = preres_activation(
             x=x,
             training=training,
+            data_format=self.data_format,
             name="features/post_activ")
         x = tf.layers.average_pooling2d(
             inputs=x,
             pool_size=7,
             strides=1,
-            data_format='channels_first',
+            data_format=self.data_format,
             name="features/final_pool")
 
-        x = tf.layers.flatten(x)
+        # x = tf.layers.flatten(x)
+        x = flatten(
+            x=x,
+            data_format=self.data_format)
         x = tf.layers.dense(
             inputs=x,
             units=self.classes,
@@ -513,7 +401,6 @@ class PreResNet(object):
 
 def get_preresnet(blocks,
                   conv1_stride=True,
-                  use_se=False,
                   width_scale=1.0,
                   model_name=None,
                   pretrained=False,
@@ -526,11 +413,9 @@ def get_preresnet(blocks,
     ----------
     blocks : int
         Number of blocks.
-    conv1_stride : bool
+    conv1_stride : bool, default True
         Whether to use stride in the first or the second convolution layer in units.
-    use_se : bool
-        Whether to use SE block.
-    width_scale : float
+    width_scale : float, default 1.0
         Scale factor for width of layers.
     model_name : str or None, default None
         Model name for loading pretrained model.
@@ -565,8 +450,10 @@ def get_preresnet(blocks,
         layers = [3, 8, 36, 3]
     elif blocks == 200:
         layers = [3, 24, 36, 3]
+    elif blocks == 269:
+        layers = [3, 30, 48, 8]
     else:
-        raise ValueError("Unsupported ResNet with number of blocks: {}".format(blocks))
+        raise ValueError("Unsupported PreResNet with number of blocks: {}".format(blocks))
 
     init_block_channels = 64
 
@@ -588,7 +475,6 @@ def get_preresnet(blocks,
         init_block_channels=init_block_channels,
         bottleneck=bottleneck,
         conv1_stride=conv1_stride,
-        use_se=use_se,
         **kwargs)
 
     if pretrained:
@@ -939,9 +825,10 @@ def preresnet200b(**kwargs):
     return get_preresnet(blocks=200, conv1_stride=False, model_name="preresnet200b", **kwargs)
 
 
-def sepreresnet18(**kwargs):
+def preresnet269b(**kwargs):
     """
-    SE-PreResNet-18 model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
+    PreResNet-269 model with stride at the second convolution in bottleneck block from 'Identity Mappings in Deep
+    Residual Networks,' https://arxiv.org/abs/1603.05027.
 
     Parameters:
     ----------
@@ -955,189 +842,13 @@ def sepreresnet18(**kwargs):
     functor
         Functor for model graph creation with extra fields.
     """
-    return get_preresnet(blocks=18, use_se=True, model_name="sepreresnet18", **kwargs)
-
-
-def sepreresnet34(**kwargs):
-    """
-    SE-PreResNet-34 model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=34, use_se=True, model_name="sepreresnet34", **kwargs)
-
-
-def sepreresnet50(**kwargs):
-    """
-    SE-PreResNet-50 model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=50, use_se=True, model_name="sepreresnet50", **kwargs)
-
-
-def sepreresnet50b(**kwargs):
-    """
-    SE-PreResNet-50 model with stride at the second convolution in bottleneck block from 'Squeeze-and-Excitation
-    Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=50, conv1_stride=False, use_se=True, model_name="sepreresnet50b", **kwargs)
-
-
-def sepreresnet101(**kwargs):
-    """
-    SE-PreResNet-101 model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=101, use_se=True, model_name="sepreresnet101", **kwargs)
-
-
-def sepreresnet101b(**kwargs):
-    """
-    SE-PreResNet-101 model with stride at the second convolution in bottleneck block from 'Squeeze-and-Excitation
-    Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=101, conv1_stride=False, use_se=True, model_name="sepreresnet101b", **kwargs)
-
-
-def sepreresnet152(**kwargs):
-    """
-    SE-PreResNet-152 model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=152, use_se=True, model_name="sepreresnet152", **kwargs)
-
-
-def sepreresnet152b(**kwargs):
-    """
-    SE-PreResNet-152 model with stride at the second convolution in bottleneck block from 'Squeeze-and-Excitation
-    Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=152, conv1_stride=False, use_se=True, model_name="sepreresnet152b", **kwargs)
-
-
-def sepreresnet200(**kwargs):
-    """
-    SE-PreResNet-200 model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507. It's an
-    experimental model.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=200, use_se=True, model_name="sepreresnet200", **kwargs)
-
-
-def sepreresnet200b(**kwargs):
-    """
-    SE-PreResNet-200 model with stride at the second convolution in bottleneck block from 'Squeeze-and-Excitation
-    Networks,' https://arxiv.org/abs/1709.01507. It's an experimental model.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.tensorflow/models'
-        Location for keeping the model parameters.
-
-    Returns
-    -------
-    functor
-        Functor for model graph creation with extra fields.
-    """
-    return get_preresnet(blocks=200, conv1_stride=False, use_se=True, model_name="sepreresnet200b", **kwargs)
+    return get_preresnet(blocks=269, conv1_stride=False, model_name="preresnet269b", **kwargs)
 
 
 def _test():
     import numpy as np
-    from .model_store import init_variables_from_state_dict
 
+    data_format = "channels_last"
     pretrained = False
 
     models = [
@@ -1159,26 +870,16 @@ def _test():
         preresnet152b,
         preresnet200,
         preresnet200b,
-
-        sepreresnet18,
-        sepreresnet34,
-        sepreresnet50,
-        sepreresnet50b,
-        sepreresnet101,
-        sepreresnet101b,
-        sepreresnet152,
-        sepreresnet152b,
-        sepreresnet200,
-        sepreresnet200b,
+        preresnet269b,
     ]
 
     for model in models:
 
-        net = model(pretrained=pretrained)
+        net = model(pretrained=pretrained, data_format=data_format)
         x = tf.placeholder(
             dtype=tf.float32,
-            shape=(None, 3, 224, 224),
-            name='xx')
+            shape=(None, 3, 224, 224) if is_channels_first(data_format) else (None, 224, 224, 3),
+            name="xx")
         y_net = net(x)
 
         weight_count = np.sum([np.prod(v.get_shape().as_list()) for v in tf.trainable_variables()])
@@ -1200,23 +901,15 @@ def _test():
         assert (model != preresnet152b or weight_count == 60185256)
         assert (model != preresnet200 or weight_count == 64666280)
         assert (model != preresnet200b or weight_count == 64666280)
-        assert (model != sepreresnet18 or weight_count == 11776928)
-        assert (model != sepreresnet34 or weight_count == 21957204)
-        assert (model != sepreresnet50 or weight_count == 28080472)
-        assert (model != sepreresnet50b or weight_count == 28080472)
-        assert (model != sepreresnet101 or weight_count == 49319320)
-        assert (model != sepreresnet101b or weight_count == 49319320)
-        assert (model != sepreresnet152 or weight_count == 66814296)
-        assert (model != sepreresnet152b or weight_count == 66814296)
-        assert (model != sepreresnet200 or weight_count == 71828312)
-        assert (model != sepreresnet200b or weight_count == 71828312)
+        assert (model != preresnet269b or weight_count == 102065832)
 
         with tf.Session() as sess:
             if pretrained:
+                from .model_store import init_variables_from_state_dict
                 init_variables_from_state_dict(sess=sess, state_dict=net.state_dict)
             else:
                 sess.run(tf.global_variables_initializer())
-            x_value = np.zeros((1, 3, 224, 224), np.float32)
+            x_value = np.zeros((1, 3, 224, 224) if is_channels_first(data_format) else (1, 224, 224, 3), np.float32)
             y = sess.run(y_net, feed_dict={x: x_value})
             assert (y.shape == (1, 1000))
         tf.reset_default_graph()

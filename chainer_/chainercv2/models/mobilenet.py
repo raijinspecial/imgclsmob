@@ -15,53 +15,7 @@ import chainer.links as L
 from chainer import Chain
 from functools import partial
 from chainer.serializers import load_npz
-from .common import SimpleSequential
-
-
-class ConvBlock(Chain):
-    """
-    Standard enough convolution block with BatchNorm and activation.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    ksize : int or tuple/list of 2 int
-        Convolution window size.
-    stride : int or tuple/list of 2 int, default 1
-        Stride of the convolution.
-    pad : int or tuple/list of 2 int, default 0
-        Padding value for convolution layer.
-    groups : int, default 1
-        Number of groups.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 ksize,
-                 stride=1,
-                 pad=0,
-                 groups=1):
-        super(ConvBlock, self).__init__()
-        with self.init_scope():
-            self.conv = L.Convolution2D(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                ksize=ksize,
-                stride=stride,
-                pad=pad,
-                nobias=True,
-                groups=groups)
-            self.bn = L.BatchNormalization(size=out_channels)
-            self.activ = F.relu
-
-    def __call__(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.activ(x)
-        return x
+from .common import conv1x1_block, conv3x3_block, dwconv3x3_block, SimpleSequential
 
 
 class DwsConvBlock(Chain):
@@ -84,17 +38,13 @@ class DwsConvBlock(Chain):
                  stride):
         super(DwsConvBlock, self).__init__()
         with self.init_scope():
-            self.dw_conv = ConvBlock(
+            self.dw_conv = dwconv3x3_block(
                 in_channels=in_channels,
                 out_channels=in_channels,
-                ksize=3,
-                stride=stride,
-                pad=1,
-                groups=in_channels)
-            self.pw_conv = ConvBlock(
+                stride=stride)
+            self.pw_conv = conv1x1_block(
                 in_channels=in_channels,
-                out_channels=out_channels,
-                ksize=1)
+                out_channels=out_channels)
 
     def __call__(self, x):
         x = self.dw_conv(x)
@@ -135,12 +85,10 @@ class MobileNet(Chain):
             self.features = SimpleSequential()
             with self.features.init_scope():
                 init_block_channels = channels[0][0]
-                setattr(self.features, "init_block", ConvBlock(
+                setattr(self.features, "init_block", conv3x3_block(
                     in_channels=in_channels,
                     out_channels=init_block_channels,
-                    ksize=3,
-                    stride=2,
-                    pad=1))
+                    stride=2))
                 in_channels = init_block_channels
                 for i, channels_per_stage in enumerate(channels[1:]):
                     stage = SimpleSequential()
@@ -352,7 +300,7 @@ def _test():
 
     chainer.global_config.train = False
 
-    pretrained = True
+    pretrained = False
 
     models = [
         mobilenet_w1,
@@ -360,7 +308,7 @@ def _test():
         mobilenet_wd2,
         mobilenet_wd4,
         fdmobilenet_w1,
-        # fdmobilenet_w3d4,
+        fdmobilenet_w3d4,
         fdmobilenet_wd2,
         fdmobilenet_wd4,
     ]

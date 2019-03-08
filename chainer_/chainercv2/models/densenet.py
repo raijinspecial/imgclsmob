@@ -3,7 +3,7 @@
     Original paper: 'Densely Connected Convolutional Networks,' https://arxiv.org/abs/1608.06993.
 """
 
-__all__ = ['DenseNet', 'densenet121', 'densenet161', 'densenet169', 'densenet201']
+__all__ = ['DenseNet', 'densenet121', 'densenet161', 'densenet169', 'densenet201', 'DenseUnit', 'TransitionBlock']
 
 import os
 import chainer.functions as F
@@ -11,89 +11,8 @@ import chainer.links as L
 from chainer import Chain
 from functools import partial
 from chainer.serializers import load_npz
-from .common import SimpleSequential
-
-
-class DenseConv(Chain):
-    """
-    DenseNet specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    ksize : int or tuple/list of 2 int
-        Convolution window size.
-    stride : int or tuple/list of 2 int
-        Stride of the convolution.
-    pad : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 ksize,
-                 stride,
-                 pad):
-        super(DenseConv, self).__init__()
-        with self.init_scope():
-            self.bn = L.BatchNormalization(size=in_channels)
-            self.activ = F.relu
-            self.conv = L.Convolution2D(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                ksize=ksize,
-                stride=stride,
-                pad=pad,
-                nobias=True)
-
-    def __call__(self, x):
-        x = self.bn(x)
-        x = self.activ(x)
-        x = self.conv(x)
-        return x
-
-
-def dense_conv1x1(in_channels,
-                  out_channels):
-    """
-    1x1 version of the DenseNet specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    """
-    return DenseConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        ksize=1,
-        stride=1,
-        pad=0)
-
-
-def dense_conv3x3(in_channels,
-                  out_channels):
-    """
-    3x3 version of the DenseNet specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    """
-    return DenseConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        ksize=3,
-        stride=1,
-        pad=1)
+from .common import pre_conv1x1_block, pre_conv3x3_block, SimpleSequential
+from .preresnet import PreResInitBlock, PreResActivation
 
 
 class DenseUnit(Chain):
@@ -120,10 +39,10 @@ class DenseUnit(Chain):
         mid_channels = inc_channels * bn_size
 
         with self.init_scope():
-            self.conv1 = dense_conv1x1(
+            self.conv1 = pre_conv1x1_block(
                 in_channels=in_channels,
                 out_channels=mid_channels)
-            self.conv2 = dense_conv3x3(
+            self.conv2 = pre_conv3x3_block(
                 in_channels=mid_channels,
                 out_channels=inc_channels)
             if self.use_dropout:
@@ -158,7 +77,7 @@ class TransitionBlock(Chain):
                  out_channels):
         super(TransitionBlock, self).__init__()
         with self.init_scope():
-            self.conv = dense_conv1x1(
+            self.conv = pre_conv1x1_block(
                 in_channels=in_channels,
                 out_channels=out_channels)
             self.pool = partial(
@@ -170,68 +89,6 @@ class TransitionBlock(Chain):
     def __call__(self, x):
         x = self.conv(x)
         x = self.pool(x)
-        return x
-
-
-class DenseInitBlock(Chain):
-    """
-    DenseNet specific initial block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels):
-        super(DenseInitBlock, self).__init__()
-        with self.init_scope():
-            self.conv = L.Convolution2D(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                ksize=7,
-                stride=2,
-                pad=3,
-                nobias=True)
-            self.bn = L.BatchNormalization(size=out_channels)
-            self.activ = F.relu
-            self.pool = partial(
-                F.max_pooling_2d,
-                ksize=3,
-                stride=2,
-                pad=1,
-                cover_all=False)
-
-    def __call__(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.activ(x)
-        x = self.pool(x)
-        return x
-
-
-class PostActivation(Chain):
-    """
-    DenseNet final block, which performs the same function of postactivation as in PreResNet.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    """
-    def __init__(self,
-                 in_channels):
-        super(PostActivation, self).__init__()
-        with self.init_scope():
-            self.bn = L.BatchNormalization(size=in_channels)
-            self.activ = F.relu
-
-    def __call__(self, x):
-        x = self.bn(x)
-        x = self.activ(x)
         return x
 
 
@@ -268,7 +125,7 @@ class DenseNet(Chain):
         with self.init_scope():
             self.features = SimpleSequential()
             with self.features.init_scope():
-                setattr(self.features, "init_block", DenseInitBlock(
+                setattr(self.features, "init_block", PreResInitBlock(
                     in_channels=in_channels,
                     out_channels=init_block_channels))
                 in_channels = init_block_channels
@@ -287,19 +144,18 @@ class DenseNet(Chain):
                                 dropout_rate=dropout_rate))
                             in_channels = out_channels
                     setattr(self.features, "stage{}".format(i + 1), stage)
-                setattr(self.features, 'post_activ', PostActivation(
-                    in_channels=in_channels))
-                setattr(self.features, 'final_pool', partial(
+                setattr(self.features, "post_activ", PreResActivation(in_channels=in_channels))
+                setattr(self.features, "final_pool", partial(
                     F.average_pooling_2d,
                     ksize=7,
                     stride=1))
 
             self.output = SimpleSequential()
             with self.output.init_scope():
-                setattr(self.output, 'flatten', partial(
+                setattr(self.output, "flatten", partial(
                     F.reshape,
                     shape=(-1, in_channels)))
-                setattr(self.output, 'fc', L.Linear(
+                setattr(self.output, "fc", L.Linear(
                     in_size=in_channels,
                     out_size=classes))
 
@@ -309,7 +165,7 @@ class DenseNet(Chain):
         return x
 
 
-def get_densenet(num_layers,
+def get_densenet(blocks,
                  model_name=None,
                  pretrained=False,
                  root=os.path.join('~', '.chainer', 'models'),
@@ -319,8 +175,8 @@ def get_densenet(num_layers,
 
     Parameters:
     ----------
-    num_layers : int
-        Number of layers.
+    blocks : int
+        Number of blocks.
     model_name : str or None, default None
         Model name for loading pretrained model.
     pretrained : bool, default False
@@ -329,24 +185,24 @@ def get_densenet(num_layers,
         Location for keeping the model parameters.
     """
 
-    if num_layers == 121:
+    if blocks == 121:
         init_block_channels = 64
         growth_rate = 32
         layers = [6, 12, 24, 16]
-    elif num_layers == 161:
+    elif blocks == 161:
         init_block_channels = 96
         growth_rate = 48
         layers = [6, 12, 36, 24]
-    elif num_layers == 169:
+    elif blocks == 169:
         init_block_channels = 64
         growth_rate = 32
         layers = [6, 12, 32, 32]
-    elif num_layers == 201:
+    elif blocks == 201:
         init_block_channels = 64
         growth_rate = 32
         layers = [6, 12, 48, 32]
     else:
-        raise ValueError("Unsupported DenseNet version with number of layers {}".format(num_layers))
+        raise ValueError("Unsupported DenseNet version with number of layers {}".format(blocks))
 
     from functools import reduce
     channels = reduce(lambda xi, yi:
@@ -386,7 +242,7 @@ def densenet121(**kwargs):
     root : str, default '~/.chainer/models'
         Location for keeping the model parameters.
     """
-    return get_densenet(num_layers=121, model_name="densenet121", **kwargs)
+    return get_densenet(blocks=121, model_name="densenet121", **kwargs)
 
 
 def densenet161(**kwargs):
@@ -400,7 +256,7 @@ def densenet161(**kwargs):
     root : str, default '~/.chainer/models'
         Location for keeping the model parameters.
     """
-    return get_densenet(num_layers=161, model_name="densenet161", **kwargs)
+    return get_densenet(blocks=161, model_name="densenet161", **kwargs)
 
 
 def densenet169(**kwargs):
@@ -414,7 +270,7 @@ def densenet169(**kwargs):
     root : str, default '~/.chainer/models'
         Location for keeping the model parameters.
     """
-    return get_densenet(num_layers=169, model_name="densenet169", **kwargs)
+    return get_densenet(blocks=169, model_name="densenet169", **kwargs)
 
 
 def densenet201(**kwargs):
@@ -428,7 +284,7 @@ def densenet201(**kwargs):
     root : str, default '~/.chainer/models'
         Location for keeping the model parameters.
     """
-    return get_densenet(num_layers=201, model_name="densenet201", **kwargs)
+    return get_densenet(blocks=201, model_name="densenet201", **kwargs)
 
 
 def _test():
@@ -437,7 +293,7 @@ def _test():
 
     chainer.global_config.train = False
 
-    pretrained = True
+    pretrained = False
 
     models = [
         densenet121,

@@ -12,48 +12,27 @@ from mxnet import autograd as ag
 from common.logger_utils import initialize_logging
 from common.train_log_param_saver import TrainLogParamSaver
 from gluon.lr_scheduler import LRScheduler
-from gluon.utils import prepare_mx_context, prepare_model, get_data_rec, get_data_loader, validate
+from gluon.utils import prepare_mx_context, prepare_model, validate
+
+from gluon.imagenet1k import add_dataset_parser_arguments
+from gluon.imagenet1k import get_batch_fn
+from gluon.imagenet1k import get_train_data_source
+from gluon.imagenet1k import get_val_data_source
+from gluon.imagenet1k import num_training_samples
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Train a model for image classification (Gluon)',
+        description='Train a model for image classification (Gluon/ImageNet-1K)',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument(
-        '--data-dir',
-        type=str,
-        default='../imgclsmob_data/imagenet',
-        help='training and validation pictures to use.')
-    parser.add_argument(
-        '--rec-train',
-        type=str,
-        default='../imgclsmob_data/imagenet/rec/train.rec',
-        help='the training data')
-    parser.add_argument(
-        '--rec-train-idx',
-        type=str,
-        default='../imgclsmob_data/imagenet/rec/train.idx',
-        help='the index of training data')
-    parser.add_argument(
-        '--rec-val',
-        type=str,
-        default='../imgclsmob_data/imagenet/rec/val.rec',
-        help='the validation data')
-    parser.add_argument(
-        '--rec-val-idx',
-        type=str,
-        default='../imgclsmob_data/imagenet/rec/val.idx',
-        help='the index of validation data')
-    parser.add_argument(
-        '--use-rec',
-        action='store_true',
-        help='use image record iter for data input. default is false.')
+
+    add_dataset_parser_arguments(parser)
 
     parser.add_argument(
         '--model',
         type=str,
         required=True,
-        help='type of model to use. see vision_model for options.')
+        help='type of model to use. see model_provider for options.')
     parser.add_argument(
         '--use-pretrained',
         action='store_true',
@@ -62,7 +41,7 @@ def parse_args():
         '--dtype',
         type=str,
         default='float32',
-        help='data type for training. default is float32')
+        help='data type for training')
     parser.add_argument(
         '--resume',
         type=str,
@@ -73,17 +52,6 @@ def parse_args():
         type=str,
         default='',
         help='resume from previously saved optimizer state if not None')
-
-    parser.add_argument(
-        '--input-size',
-        type=int,
-        default=224,
-        help='size of the input for model. default is 224')
-    parser.add_argument(
-        '--resize-inv-factor',
-        type=float,
-        default=0.875,
-        help='inverted ratio for input image crop. default is 0.875')
 
     parser.add_argument(
         '--num-gpus',
@@ -103,6 +71,11 @@ def parse_args():
         type=int,
         default=512,
         help='training batch size per device (CPU/GPU).')
+    parser.add_argument(
+        '--batch-size-scale',
+        type=int,
+        default=1,
+        help='manual batch-size increasing factor.')
     parser.add_argument(
         '--num-epochs',
         type=int,
@@ -128,7 +101,7 @@ def parse_args():
         '--lr',
         type=float,
         default=0.1,
-        help='learning rate. default is 0.1')
+        help='learning rate')
     parser.add_argument(
         '--lr-mode',
         type=str,
@@ -138,7 +111,7 @@ def parse_args():
         '--lr-decay',
         type=float,
         default=0.1,
-        help='decay rate of learning rate. default is 0.1')
+        help='decay rate of learning rate')
     parser.add_argument(
         '--lr-decay-period',
         type=int,
@@ -148,12 +121,12 @@ def parse_args():
         '--lr-decay-epoch',
         type=str,
         default='40,60',
-        help='epoches at which learning rate decays. default is 40,60.')
+        help='epoches at which learning rate decays')
     parser.add_argument(
         '--target-lr',
         type=float,
         default=1e-8,
-        help='ending learning rate; default is 1e-8')
+        help='ending learning rate')
     parser.add_argument(
         '--poly-power',
         type=float,
@@ -168,7 +141,7 @@ def parse_args():
         '--warmup-lr',
         type=float,
         default=1e-8,
-        help='starting warmup learning rate; default is 1e-8')
+        help='starting warmup learning rate')
     parser.add_argument(
         '--warmup-mode',
         type=str,
@@ -178,21 +151,36 @@ def parse_args():
         '--momentum',
         type=float,
         default=0.9,
-        help='momentum value for optimizer; default is 0.9')
+        help='momentum value for optimizer')
     parser.add_argument(
         '--wd',
         type=float,
         default=0.0001,
-        help='weight decay rate. default is 0.0001.')
+        help='weight decay rate')
     parser.add_argument(
-        '--no-wd',
-        action='store_true',
-        help='whether to remove weight decay on bias, and beta/gamma for batchnorm layers.')
+        '--gamma-wd-mult',
+        type=float,
+        default=1.0,
+        help='weight decay multiplier for batchnorm gamma')
+    parser.add_argument(
+        '--beta-wd-mult',
+        type=float,
+        default=1.0,
+        help='weight decay multiplier for batchnorm beta')
+    parser.add_argument(
+        '--bias-wd-mult',
+        type=float,
+        default=1.0,
+        help='weight decay multiplier for bias')
     parser.add_argument(
         '--grad-clip',
         type=float,
         default=None,
-        help='max_norm for gradient clipping.')
+        help='max_norm for gradient clipping')
+    parser.add_argument(
+        '--label-smoothing',
+        action='store_true',
+        help='use label smoothing')
 
     parser.add_argument(
         '--mixup',
@@ -245,7 +233,7 @@ def parse_args():
         '--tune-layers',
         type=str,
         default='',
-        help='list of layers for fine tuning')
+        help='Regexp for selecting layers for fine tuning')
     args = parser.parse_args()
     return args
 
@@ -277,12 +265,22 @@ def prepare_trainer(net,
                     num_epochs,
                     num_training_samples,
                     dtype,
-                    no_wd=False,
+                    gamma_wd_mult=1.0,
+                    beta_wd_mult=1.0,
+                    bias_wd_mult=1.0,
                     state_file_path=None):
 
-    if no_wd:
-        for k, v in net.collect_params('.*beta|.*gamma|.*bias').items():
-            v.wd_mult = 0.0
+    if gamma_wd_mult != 1.0:
+        for k, v in net.collect_params('.*gamma').items():
+            v.wd_mult = gamma_wd_mult
+
+    if beta_wd_mult != 1.0:
+        for k, v in net.collect_params('.*beta').items():
+            v.wd_mult = beta_wd_mult
+
+    if bias_wd_mult != 1.0:
+        for k, v in net.collect_params('.*bias').items():
+            v.wd_mult = bias_wd_mult
 
     if lr_decay_period > 0:
         lr_decay_epoch = list(range(lr_decay_period, num_epochs, lr_decay_period))
@@ -338,7 +336,7 @@ def train_epoch(epoch,
                 acc_top1_train,
                 train_data,
                 batch_fn,
-                use_rec,
+                data_source_needs_reset,
                 dtype,
                 ctx,
                 loss_func,
@@ -348,13 +346,16 @@ def train_epoch(epoch,
                 log_interval,
                 mixup,
                 mixup_epoch_tail,
+                label_smoothing,
                 num_classes,
                 num_epochs,
-                grad_clip_value):
+                grad_clip_value,
+                batch_size_scale):
 
     labels_list_inds = None
+    batch_size_extend_count = 0
     tic = time.time()
-    if use_rec:
+    if data_source_needs_reset:
         train_data.reset()
     acc_top1_train.reset()
     train_loss = 0.0
@@ -365,16 +366,22 @@ def train_epoch(epoch,
 
         if mixup:
             labels_list_inds = labels_list
-            labels_list = [mx.nd.one_hot(Y, depth=num_classes) for Y in labels_list]
+            labels_list = [Y.one_hot(depth=num_classes) for Y in labels_list]
             if epoch < num_epochs - mixup_epoch_tail:
                 alpha = 1
                 lam = np.random.beta(alpha, alpha)
                 data_list = [lam * X + (1 - lam) * X[::-1] for X in data_list]
                 labels_list = [lam * Y + (1 - lam) * Y[::-1] for Y in labels_list]
+        elif label_smoothing:
+            eta = 0.1
+            on_value = 1 - eta + eta / num_classes
+            off_value = eta / num_classes
+            labels_list_inds = labels_list
+            labels_list = [Y.one_hot(depth=num_classes, on_value=on_value, off_value=off_value) for Y in labels_list]
 
         with ag.record():
             outputs_list = [net(X.astype(dtype, copy=False)) for X in data_list]
-            loss_list = [loss_func(yhat, y) for yhat, y in zip(outputs_list, labels_list)]
+            loss_list = [loss_func(yhat, y.astype(dtype, copy=False)) for yhat, y in zip(outputs_list, labels_list)]
         for loss in loss_list:
             loss.backward()
         lr_scheduler.update(i, epoch)
@@ -383,12 +390,21 @@ def train_epoch(epoch,
             grads = [v.grad(ctx[0]) for v in net.collect_params().values() if v._grad is not None]
             gluon.utils.clip_global_norm(grads, max_norm=grad_clip_value)
 
-        trainer.step(batch_size)
+        if batch_size_scale == 1:
+            trainer.step(batch_size)
+        else:
+            if (i + 1) % batch_size_scale == 0:
+                batch_size_extend_count = 0
+                trainer.step(batch_size * batch_size_scale)
+                for p in net.collect_params().values():
+                    p.zero_grad()
+            else:
+                batch_size_extend_count += 1
 
         train_loss += sum([loss.mean().asscalar() for loss in loss_list]) / len(loss_list)
 
         acc_top1_train.update(
-            labels=(labels_list if not mixup else labels_list_inds),
+            labels=(labels_list if not (mixup or label_smoothing) else labels_list_inds),
             preds=outputs_list)
 
         if log_interval and not (i + 1) % log_interval:
@@ -398,6 +414,11 @@ def train_epoch(epoch,
             err_top1_train = 1.0 - top1
             logging.info('Epoch[{}] Batch [{}]\tSpeed: {:.2f} samples/sec\ttop1-err={:.4f}\tlr={:.5f}'.format(
                 epoch + 1, i, speed, err_top1_train, trainer.learning_rate))
+
+    if (batch_size_scale != 1) and (batch_size_extend_count > 0):
+        trainer.step(batch_size * batch_size_extend_count)
+        for p in net.collect_params().values():
+            p.zero_grad()
 
     throughput = int(batch_size * (i + 1) / (time.time() - tic))
     logging.info('[Epoch {}] speed: {:.2f} samples/sec\ttime cost: {:.2f} sec'.format(
@@ -418,7 +439,7 @@ def train_net(batch_size,
               train_data,
               val_data,
               batch_fn,
-              use_rec,
+              data_source_needs_reset,
               dtype,
               net,
               trainer,
@@ -427,9 +448,17 @@ def train_net(batch_size,
               log_interval,
               mixup,
               mixup_epoch_tail,
+              label_smoothing,
               num_classes,
               grad_clip_value,
+              batch_size_scale,
               ctx):
+
+    assert (not (mixup and label_smoothing))
+
+    if batch_size_scale != 1:
+        for p in net.collect_params().values():
+            p.grad_req = 'add'
 
     if isinstance(ctx, mx.Context):
         ctx = [ctx]
@@ -438,7 +467,7 @@ def train_net(batch_size,
     acc_top5_val = mx.metric.TopKAccuracy(5)
     acc_top1_train = mx.metric.Accuracy()
 
-    loss_func = gluon.loss.SoftmaxCrossEntropyLoss(sparse_label=(not mixup))
+    loss_func = gluon.loss.SoftmaxCrossEntropyLoss(sparse_label=(not (mixup or label_smoothing)))
 
     assert (type(start_epoch1) == int)
     assert (start_epoch1 >= 1)
@@ -450,7 +479,7 @@ def train_net(batch_size,
             net=net,
             val_data=val_data,
             batch_fn=batch_fn,
-            use_rec=use_rec,
+            data_source_needs_reset=data_source_needs_reset,
             dtype=dtype,
             ctx=ctx)
         logging.info('[Epoch {}] validation: err-top1={:.4f}\terr-top5={:.4f}'.format(
@@ -464,7 +493,7 @@ def train_net(batch_size,
             acc_top1_train=acc_top1_train,
             train_data=train_data,
             batch_fn=batch_fn,
-            use_rec=use_rec,
+            data_source_needs_reset=data_source_needs_reset,
             dtype=dtype,
             ctx=ctx,
             loss_func=loss_func,
@@ -474,9 +503,11 @@ def train_net(batch_size,
             log_interval=log_interval,
             mixup=mixup,
             mixup_epoch_tail=mixup_epoch_tail,
+            label_smoothing=label_smoothing,
             num_classes=num_classes,
             num_epochs=num_epochs,
-            grad_clip_value=grad_clip_value)
+            grad_clip_value=grad_clip_value,
+            batch_size_scale=batch_size_scale)
 
         err_top1_val, err_top5_val = validate(
             acc_top1=acc_top1_val,
@@ -484,7 +515,7 @@ def train_net(batch_size,
             net=net,
             val_data=val_data,
             batch_fn=batch_fn,
-            use_rec=use_rec,
+            data_source_needs_reset=data_source_needs_reset,
             dtype=dtype,
             ctx=ctx)
 
@@ -525,29 +556,29 @@ def main():
         pretrained_model_file_path=args.resume.strip(),
         dtype=args.dtype,
         tune_layers=args.tune_layers,
+        classes=args.num_classes,
+        in_channels=args.in_channels,
         ctx=ctx)
+
+    assert (hasattr(net, 'classes'))
+    assert (hasattr(net, 'in_size'))
     num_classes = net.classes if hasattr(net, 'classes') else 1000
     input_image_size = net.in_size if hasattr(net, 'in_size') else (args.input_size, args.input_size)
 
-    if args.use_rec:
-        train_data, val_data, batch_fn = get_data_rec(
-            rec_train=args.rec_train,
-            rec_train_idx=args.rec_train_idx,
-            rec_val=args.rec_val,
-            rec_val_idx=args.rec_val_idx,
-            batch_size=batch_size,
-            num_workers=args.num_workers,
-            input_image_size=input_image_size,
-            resize_inv_factor=args.resize_inv_factor)
-    else:
-        train_data, val_data, batch_fn = get_data_loader(
-            data_dir=args.data_dir,
-            batch_size=batch_size,
-            num_workers=args.num_workers,
-            input_image_size=input_image_size,
-            resize_inv_factor=args.resize_inv_factor)
+    train_data = get_train_data_source(
+        dataset_args=args,
+        batch_size=batch_size,
+        num_workers=args.num_workers,
+        input_image_size=input_image_size)
+    val_data = get_val_data_source(
+        dataset_args=args,
+        batch_size=batch_size,
+        num_workers=args.num_workers,
+        input_image_size=input_image_size,
+        resize_inv_factor=args.resize_inv_factor)
+    batch_fn = get_batch_fn(dataset_args=args)
+    data_source_needs_reset = args.use_rec
 
-    num_training_samples = 1281167
     trainer, lr_scheduler = prepare_trainer(
         net=net,
         optimizer_name=args.optimizer_name,
@@ -567,7 +598,9 @@ def main():
         num_epochs=args.num_epochs,
         num_training_samples=num_training_samples,
         dtype=args.dtype,
-        no_wd=args.no_wd,
+        gamma_wd_mult=args.gamma_wd_mult,
+        beta_wd_mult=args.beta_wd_mult,
+        bias_wd_mult=args.bias_wd_mult,
         state_file_path=args.resume_state)
 
     if args.save_dir and args.save_interval:
@@ -600,7 +633,7 @@ def main():
         train_data=train_data,
         val_data=val_data,
         batch_fn=batch_fn,
-        use_rec=args.use_rec,
+        data_source_needs_reset=data_source_needs_reset,
         dtype=args.dtype,
         net=net,
         trainer=trainer,
@@ -609,8 +642,10 @@ def main():
         log_interval=args.log_interval,
         mixup=args.mixup,
         mixup_epoch_tail=args.mixup_epoch_tail,
+        label_smoothing=args.label_smoothing,
         num_classes=num_classes,
         grad_clip_value=args.grad_clip,
+        batch_size_scale=args.batch_size_scale,
         ctx=ctx)
 
 

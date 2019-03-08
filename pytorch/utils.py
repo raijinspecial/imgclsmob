@@ -1,11 +1,8 @@
-import math
 import logging
 import os
 import numpy as np
 
 import torch.utils.data
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
 
 from .pytorchcv.model_provider import get_model
 
@@ -17,60 +14,14 @@ def prepare_pt_context(num_gpus,
     return use_cuda, batch_size
 
 
-def get_data_loader(data_dir,
-                    batch_size,
-                    num_workers,
-                    input_image_size=224,
-                    resize_inv_factor=0.875):
-    assert (resize_inv_factor > 0.0)
-    resize_value = int(math.ceil(float(input_image_size) / resize_inv_factor))
-
-    normalize = transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225])
-    jitter_param = 0.4
-
-    train_loader = torch.utils.data.DataLoader(
-        dataset=datasets.ImageFolder(
-            root=os.path.join(data_dir, 'train'),
-            transform=transforms.Compose([
-                transforms.RandomResizedCrop(input_image_size),
-                transforms.RandomHorizontalFlip(),
-                transforms.ColorJitter(
-                    brightness=jitter_param,
-                    contrast=jitter_param,
-                    saturation=jitter_param),
-                transforms.ToTensor(),
-                normalize,
-            ])),
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True)
-
-    val_loader = torch.utils.data.DataLoader(
-        dataset=datasets.ImageFolder(
-            root=os.path.join(data_dir, 'val'),
-            transform=transforms.Compose([
-                transforms.Resize(resize_value),
-                transforms.CenterCrop(input_image_size),
-                transforms.ToTensor(),
-                normalize,
-            ])),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        pin_memory=True)
-
-    return train_loader, val_loader
-
-
 def prepare_model(model_name,
                   use_pretrained,
                   pretrained_model_file_path,
                   use_cuda,
                   use_data_parallel=True,
-                  ignore_extra=True):
+                  ignore_extra=False,
+                  remap_to_cpu=False,
+                  remove_module=False):
     kwargs = {'pretrained': use_pretrained}
 
     net = get_model(model_name, **kwargs)
@@ -80,7 +31,7 @@ def prepare_model(model_name,
         logging.info('Loading model: {}'.format(pretrained_model_file_path))
         checkpoint = torch.load(
             pretrained_model_file_path,
-            map_location=(None if use_cuda else 'cpu'))
+            map_location=(None if use_cuda and not remap_to_cpu else 'cpu'))
         if (type(checkpoint) == dict) and ('state_dict' in checkpoint):
             checkpoint = checkpoint['state_dict']
 
@@ -90,7 +41,12 @@ def prepare_model(model_name,
             pretrained_state = {k: v for k, v in pretrained_state.items() if k in model_dict}
             net.load_state_dict(pretrained_state)
         else:
-            net.load_state_dict(checkpoint)
+            if remove_module:
+                net_tmp = torch.nn.DataParallel(net)
+                net_tmp.load_state_dict(checkpoint)
+                net.load_state_dict(net_tmp.module.cpu().state_dict())
+            else:
+                net.load_state_dict(checkpoint)
 
     if use_data_parallel and use_cuda:
         net = torch.nn.DataParallel(net)
@@ -164,3 +120,20 @@ def validate(acc_top1,
     top1 = acc_top1.avg.item()
     top5 = acc_top5.avg.item()
     return 1.0 - top1, 1.0 - top5
+
+
+def validate1(accuracy_metric,
+              net,
+              val_data,
+              use_cuda):
+    net.eval()
+    accuracy_metric.reset()
+    with torch.no_grad():
+        for data, target in val_data:
+            if use_cuda:
+                target = target.cuda(non_blocking=True)
+            output = net(data)
+            accuracy_value = accuracy(output, target)
+            accuracy_metric.update(accuracy_value[0], data.size(0))
+    accuracy_value = accuracy_metric.avg.item()
+    return 1.0 - accuracy_value

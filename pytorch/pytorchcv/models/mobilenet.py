@@ -12,51 +12,7 @@ __all__ = ['MobileNet', 'mobilenet_w1', 'mobilenet_w3d4', 'mobilenet_wd2', 'mobi
 import os
 import torch.nn as nn
 import torch.nn.init as init
-
-
-class ConvBlock(nn.Module):
-    """
-    Standard enough convolution block with BatchNorm and activation.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    stride : int or tuple/list of 2 int, default 1
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int, default 0
-        Padding value for convolution layer.
-    groups : int, default 1
-        Number of groups.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 kernel_size,
-                 stride=1,
-                 padding=0,
-                 groups=1):
-        super(ConvBlock, self).__init__()
-        self.conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            groups=groups,
-            bias=False)
-        self.bn = nn.BatchNorm2d(num_features=out_channels)
-        self.activ = nn.ReLU(inplace=True)
-
-    def forward(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        x = self.activ(x)
-        return x
+from .common import conv1x1_block, conv3x3_block, dwconv3x3_block
 
 
 class DwsConvBlock(nn.Module):
@@ -78,17 +34,13 @@ class DwsConvBlock(nn.Module):
                  out_channels,
                  stride):
         super(DwsConvBlock, self).__init__()
-        self.dw_conv = ConvBlock(
+        self.dw_conv = dwconv3x3_block(
             in_channels=in_channels,
             out_channels=in_channels,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            groups=in_channels)
-        self.pw_conv = ConvBlock(
+            stride=stride)
+        self.pw_conv = conv1x1_block(
             in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=1)
+            out_channels=out_channels)
 
     def forward(self, x):
         x = self.dw_conv(x)
@@ -127,12 +79,10 @@ class MobileNet(nn.Module):
 
         self.features = nn.Sequential()
         init_block_channels = channels[0][0]
-        self.features.add_module("init_block", ConvBlock(
+        self.features.add_module("init_block", conv3x3_block(
             in_channels=in_channels,
             out_channels=init_block_channels,
-            kernel_size=3,
-            stride=2,
-            padding=1))
+            stride=2))
         in_channels = init_block_channels
         for i, channels_per_stage in enumerate(channels[1:]):
             stage = nn.Sequential()
@@ -346,12 +296,20 @@ def fdmobilenet_wd4(**kwargs):
     return get_mobilenet(version="fd", width_scale=0.25, model_name="fdmobilenet_wd4", **kwargs)
 
 
-def _test():
+def _calc_width(net):
     import numpy as np
+    net_params = filter(lambda p: p.requires_grad, net.parameters())
+    weight_count = 0
+    for param in net_params:
+        weight_count += np.prod(param.size())
+    return weight_count
+
+
+def _test():
     import torch
     from torch.autograd import Variable
 
-    pretrained = True
+    pretrained = False
 
     models = [
         mobilenet_w1,
@@ -359,7 +317,7 @@ def _test():
         mobilenet_wd2,
         mobilenet_wd4,
         fdmobilenet_w1,
-        # fdmobilenet_w3d4,
+        fdmobilenet_w3d4,
         fdmobilenet_wd2,
         fdmobilenet_wd4,
     ]
@@ -368,11 +326,10 @@ def _test():
 
         net = model(pretrained=pretrained)
 
-        net.train()
-        net_params = filter(lambda p: p.requires_grad, net.parameters())
-        weight_count = 0
-        for param in net_params:
-            weight_count += np.prod(param.size())
+        # net.train()
+        net.eval()
+        weight_count = _calc_width(net)
+        print("m={}, {}".format(model.__name__, weight_count))
         assert (model != mobilenet_w1 or weight_count == 4231976)
         assert (model != mobilenet_w3d4 or weight_count == 2585560)
         assert (model != mobilenet_wd2 or weight_count == 1331592)

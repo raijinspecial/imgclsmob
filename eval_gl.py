@@ -5,49 +5,25 @@ import logging
 import mxnet as mx
 
 from common.logger_utils import initialize_logging
-from gluon.utils import prepare_mx_context, prepare_model, get_data_rec, get_data_loader, calc_net_weight_count,\
-    validate
+from gluon.utils import prepare_mx_context, prepare_model, calc_net_weight_count, validate
+from gluon.model_stats import measure_model
+from gluon.imagenet1k import add_dataset_parser_arguments
+from gluon.imagenet1k import get_batch_fn
+from gluon.imagenet1k import get_val_data_source
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Evaluate a model for image classification (Gluon)',
+        description='Evaluate a model for image classification (Gluon/ImageNet-1K)',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument(
-        '--data-dir',
-        type=str,
-        default='../imgclsmob_data/imagenet',
-        help='training and validation pictures to use.')
-    parser.add_argument(
-        '--rec-train',
-        type=str,
-        default='../imgclsmob_data/imagenet/rec/train.rec',
-        help='the training data')
-    parser.add_argument(
-        '--rec-train-idx',
-        type=str,
-        default='../imgclsmob_data/imagenet/rec/train.idx',
-        help='the index of training data')
-    parser.add_argument(
-        '--rec-val',
-        type=str,
-        default='../imgclsmob_data/imagenet/rec/val.rec',
-        help='the validation data')
-    parser.add_argument(
-        '--rec-val-idx',
-        type=str,
-        default='../imgclsmob_data/imagenet/rec/val.idx',
-        help='the index of validation data')
-    parser.add_argument(
-        '--use-rec',
-        action='store_true',
-        help='use image record iter for data input. default is false.')
+
+    add_dataset_parser_arguments(parser)
 
     parser.add_argument(
         '--model',
         type=str,
         required=True,
-        help='type of model to use. see vision_model for options.')
+        help='type of model to use. see model_provider for options.')
     parser.add_argument(
         '--use-pretrained',
         action='store_true',
@@ -62,17 +38,16 @@ def parse_args():
         type=str,
         default='',
         help='resume from previously saved parameters if not None')
-
     parser.add_argument(
-        '--input-size',
-        type=int,
-        default=224,
-        help='size of the input for model. default is 224')
+        '--calc-flops',
+        dest='calc_flops',
+        action='store_true',
+        help='calculate FLOPs')
     parser.add_argument(
-        '--resize-inv-factor',
-        type=float,
-        default=0.875,
-        help='inverted ratio for input image crop. default is 0.875')
+        '--calc-flops-only',
+        dest='calc_flops_only',
+        action='store_true',
+        help='calculate FLOPs without quality estimation')
 
     parser.add_argument(
         '--num-gpus',
@@ -121,35 +96,51 @@ def parse_args():
 def test(net,
          val_data,
          batch_fn,
-         use_rec,
+         data_source_needs_reset,
          dtype,
          ctx,
+         input_image_size,
+         in_channels,
          calc_weight_count=False,
+         calc_flops=False,
+         calc_flops_only=True,
          extended_log=False):
-    acc_top1 = mx.metric.Accuracy()
-    acc_top5 = mx.metric.TopKAccuracy(5)
+    if not calc_flops_only:
+        acc_top1 = mx.metric.Accuracy()
+        acc_top5 = mx.metric.TopKAccuracy(5)
+        tic = time.time()
+        err_top1_val, err_top5_val = validate(
+            acc_top1=acc_top1,
+            acc_top5=acc_top5,
+            net=net,
+            val_data=val_data,
+            batch_fn=batch_fn,
+            data_source_needs_reset=data_source_needs_reset,
+            dtype=dtype,
+            ctx=ctx)
+        if extended_log:
+            logging.info('Test: err-top1={top1:.4f} ({top1})\terr-top5={top5:.4f} ({top5})'.format(
+                top1=err_top1_val, top5=err_top5_val))
+        else:
+            logging.info('Test: err-top1={top1:.4f}\terr-top5={top5:.4f}'.format(
+                top1=err_top1_val, top5=err_top5_val))
+        logging.info('Time cost: {:.4f} sec'.format(
+            time.time() - tic))
 
-    tic = time.time()
-    err_top1_val, err_top5_val = validate(
-        acc_top1=acc_top1,
-        acc_top5=acc_top5,
-        net=net,
-        val_data=val_data,
-        batch_fn=batch_fn,
-        use_rec=use_rec,
-        dtype=dtype,
-        ctx=ctx)
     if calc_weight_count:
         weight_count = calc_net_weight_count(net)
-        logging.info('Model: {} trainable parameters'.format(weight_count))
-    if extended_log:
-        logging.info('Test: err-top1={top1:.4f} ({top1})\terr-top5={top5:.4f} ({top5})'.format(
-            top1=err_top1_val, top5=err_top5_val))
-    else:
-        logging.info('Test: err-top1={top1:.4f}\terr-top5={top5:.4f}'.format(
-            top1=err_top1_val, top5=err_top5_val))
-    logging.info('Time cost: {:.4f} sec'.format(
-        time.time() - tic))
+        if not calc_flops:
+            logging.info("Model: {} trainable parameters".format(weight_count))
+    if calc_flops:
+        num_flops, num_macs, num_params = measure_model(net, in_channels, input_image_size, ctx[0])
+        assert (not calc_weight_count) or (weight_count == num_params)
+        stat_msg = "Params: {params} ({params_m:.2f}M), FLOPs: {flops} ({flops_m:.2f}M)," \
+                   " FLOPs/2: {flops2} ({flops2_m:.2f}M), MACs: {macs} ({macs_m:.2f}M)"
+        logging.info(stat_msg.format(
+            params=num_params, params_m=num_params / 1e6,
+            flops=num_flops, flops_m=num_flops / 1e6,
+            flops2=num_flops / 2, flops2_m=num_flops / 2 / 1e6,
+            macs=num_macs, macs_m=num_macs / 1e6))
 
 
 def main():
@@ -172,37 +163,34 @@ def main():
         pretrained_model_file_path=args.resume.strip(),
         dtype=args.dtype,
         tune_layers="",
+        classes=args.num_classes,
+        in_channels=args.in_channels,
+        do_hybridize=(not args.calc_flops),
         ctx=ctx)
     input_image_size = net.in_size if hasattr(net, 'in_size') else (args.input_size, args.input_size)
 
-    if args.use_rec:
-        train_data, val_data, batch_fn = get_data_rec(
-            rec_train=args.rec_train,
-            rec_train_idx=args.rec_train_idx,
-            rec_val=args.rec_val,
-            rec_val_idx=args.rec_val_idx,
-            batch_size=batch_size,
-            num_workers=args.num_workers,
-            input_image_size=input_image_size,
-            resize_inv_factor=args.resize_inv_factor)
-    else:
-        train_data, val_data, batch_fn = get_data_loader(
-            data_dir=args.data_dir,
-            batch_size=batch_size,
-            num_workers=args.num_workers,
-            input_image_size=input_image_size,
-            resize_inv_factor=args.resize_inv_factor)
+    val_data = get_val_data_source(
+        dataset_args=args,
+        batch_size=batch_size,
+        num_workers=args.num_workers,
+        input_image_size=input_image_size,
+        resize_inv_factor=args.resize_inv_factor)
+    batch_fn = get_batch_fn(dataset_args=args)
 
-    assert (args.use_pretrained or args.resume.strip())
+    assert (args.use_pretrained or args.resume.strip() or args.calc_flops_only)
     test(
         net=net,
         val_data=val_data,
         batch_fn=batch_fn,
-        use_rec=args.use_rec,
+        data_source_needs_reset=args.use_rec,
         dtype=args.dtype,
         ctx=ctx,
+        input_image_size=input_image_size,
+        in_channels=args.in_channels,
         # calc_weight_count=(not log_file_exist),
         calc_weight_count=True,
+        calc_flops=args.calc_flops,
+        calc_flops_only=args.calc_flops_only,
         extended_log=True)
 
 

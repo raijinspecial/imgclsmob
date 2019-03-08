@@ -6,143 +6,9 @@
 __all__ = ['mobilenetv2', 'mobilenetv2_w1', 'mobilenetv2_w3d4', 'mobilenetv2_wd2', 'mobilenetv2_wd4']
 
 import os
-from keras import backend as K
 from keras import layers as nn
 from keras.models import Model
-from .common import conv2d, GluonBatchNormalization
-
-
-def mobnet_conv(x,
-                in_channels,
-                out_channels,
-                kernel_size,
-                strides,
-                padding,
-                groups,
-                activate,
-                name="mobnet_conv"):
-    """
-    MobileNetV2 specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    kernel_size : int or tuple/list of 2 int
-        Convolution window size.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    padding : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    groups : int
-        Number of groups.
-    activate : bool
-        Whether activate the convolution block.
-    name : str, default 'mobnet_conv'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    x = conv2d(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=kernel_size,
-        strides=strides,
-        padding=padding,
-        groups=groups,
-        use_bias=False,
-        name=name + "/conv")
-    x = GluonBatchNormalization(name=name + "/bn")(x)
-    if activate:
-        x = nn.ReLU(max_value=6.0, name=name + "/activ")(x)
-    return x
-
-
-def mobnet_conv1x1(x,
-                   in_channels,
-                   out_channels,
-                   activate,
-                   name="mobnet_conv1x1"):
-    """
-    1x1 version of the MobileNetV2 specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    activate : bool
-        Whether activate the convolution block.
-    name : str, default 'mobnet_conv1x1'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return mobnet_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=1,
-        strides=1,
-        padding=0,
-        groups=1,
-        activate=activate,
-        name=name)
-
-
-def mobnet_dwconv3x3(x,
-                     in_channels,
-                     out_channels,
-                     strides,
-                     activate,
-                     name="mobnet_dwconv3x3"):
-    """
-    3x3 depthwise version of the MobileNetV2 specific convolution block.
-
-    Parameters:
-    ----------
-    x : keras.backend tensor/variable/symbol
-        Input tensor/variable/symbol.
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    strides : int or tuple/list of 2 int
-        Strides of the convolution.
-    activate : bool
-        Whether activate the convolution block.
-    name : str, default 'mobnet_dwconv3x3'
-        Block name.
-
-    Returns
-    -------
-    keras.backend tensor/variable/symbol
-        Resulted tensor/variable/symbol.
-    """
-    return mobnet_conv(
-        x=x,
-        in_channels=in_channels,
-        out_channels=out_channels,
-        kernel_size=3,
-        strides=strides,
-        padding=1,
-        groups=out_channels,
-        activate=activate,
-        name=name)
+from .common import conv1x1, conv1x1_block, conv3x3_block, dwconv3x3_block, is_channels_first, flatten
 
 
 def linear_bottleneck(x,
@@ -180,23 +46,24 @@ def linear_bottleneck(x,
     if residual:
         identity = x
 
-    x = mobnet_conv1x1(
+    x = conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=mid_channels,
-        activate=True,
+        activation="relu6",
         name=name + "/conv1")
-    x = mobnet_dwconv3x3(
+    x = dwconv3x3_block(
         x=x,
         in_channels=mid_channels,
         out_channels=mid_channels,
         strides=strides,
-        activate=True,
+        activation="relu6",
         name=name + "/conv2")
-    x = mobnet_conv1x1(
+    x = conv1x1_block(
         x=x,
         in_channels=mid_channels,
         out_channels=out_channels,
+        activation=None,
         activate=False,
         name=name + "/conv3")
 
@@ -230,18 +97,15 @@ def mobilenetv2(channels,
     classes : int, default 1000
         Number of classification classes.
     """
-    input_shape = (in_channels, 224, 224) if K.image_data_format() == 'channels_first' else (224, 224, in_channels)
+    input_shape = (in_channels, 224, 224) if is_channels_first() else (224, 224, in_channels)
     input = nn.Input(shape=input_shape)
 
-    x = mobnet_conv(
+    x = conv3x3_block(
         x=input,
         in_channels=in_channels,
         out_channels=init_block_channels,
-        kernel_size=3,
         strides=2,
-        padding=1,
-        groups=1,
-        activate=True,
+        activation="relu6",
         name="features/init_block")
     in_channels = init_block_channels
     for i, channels_per_stage in enumerate(channels):
@@ -256,11 +120,11 @@ def mobilenetv2(channels,
                 expansion=expansion,
                 name="features/stage{}/unit{}".format(i + 1, j + 1))
             in_channels = out_channels
-    x = mobnet_conv1x1(
+    x = conv1x1_block(
         x=x,
         in_channels=in_channels,
         out_channels=final_block_channels,
-        activate=True,
+        activation="relu6",
         name="features/final_block")
     in_channels = final_block_channels
     x = nn.AvgPool2D(
@@ -268,12 +132,14 @@ def mobilenetv2(channels,
         strides=1,
         name="features/final_pool")(x)
 
-    x = nn.Conv2D(
-        filters=classes,
-        kernel_size=1,
+    x = conv1x1(
+        x=x,
+        in_channels=in_channels,
+        out_channels=classes,
         use_bias=False,
-        name="output")(x)
-    x = nn.Flatten()(x)
+        name="output")
+    # x = nn.Flatten()(x)
+    x = flatten(x)
 
     model = Model(inputs=input, outputs=x)
     model.in_size = in_size
@@ -326,11 +192,11 @@ def get_mobilenetv2(width_scale,
     if pretrained:
         if (model_name is None) or (not model_name):
             raise ValueError("Parameter `model_name` should be properly initialized for loading pretrained model.")
-        from .model_store import get_model_file
-        net.load_weights(
-            filepath=get_model_file(
-                model_name=model_name,
-                local_model_store_dir_path=root))
+        from .model_store import download_model
+        download_model(
+            net=net,
+            model_name=model_name,
+            local_model_store_dir_path=root)
 
     return net
 
@@ -419,7 +285,10 @@ def _test():
         assert (model != mobilenetv2_wd2 or weight_count == 1964736)
         assert (model != mobilenetv2_wd4 or weight_count == 1516392)
 
-        x = np.zeros((1, 3, 224, 224), np.float32)
+        if is_channels_first():
+            x = np.zeros((1, 3, 224, 224), np.float32)
+        else:
+            x = np.zeros((1, 224, 224, 3), np.float32)
         y = net.predict(x)
         assert (y.shape == (1, 1000))
 

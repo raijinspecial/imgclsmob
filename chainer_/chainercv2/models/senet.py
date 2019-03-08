@@ -3,7 +3,7 @@
     Original paper: 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
 """
 
-__all__ = ['SENet', 'senet52', 'senet103', 'senet154']
+__all__ = ['SENet', 'senet52', 'senet103', 'senet154', 'SEInitBlock']
 
 import os
 import math
@@ -12,8 +12,7 @@ import chainer.links as L
 from chainer import Chain
 from functools import partial
 from chainer.serializers import load_npz
-from .common import SimpleSequential, SEBlock
-from .resnext import resnext_conv3x3, resnext_conv1x1
+from .common import conv1x1_block, conv3x3_block, SEBlock, SimpleSequential
 
 
 class SENetBottleneck(Chain):
@@ -41,26 +40,22 @@ class SENetBottleneck(Chain):
                  bottleneck_width):
         super(SENetBottleneck, self).__init__()
         mid_channels = out_channels // 4
-        D = int(math.floor(mid_channels * (bottleneck_width / 64)))
+        D = int(math.floor(mid_channels * (bottleneck_width / 64.0)))
         group_width = cardinality * D
         group_width2 = group_width // 2
 
         with self.init_scope():
-            self.conv1 = resnext_conv1x1(
+            self.conv1 = conv1x1_block(
                 in_channels=in_channels,
-                out_channels=group_width2,
-                stride=1,
-                activate=True)
-            self.conv2 = resnext_conv3x3(
+                out_channels=group_width2)
+            self.conv2 = conv3x3_block(
                 in_channels=group_width2,
                 out_channels=group_width,
                 stride=stride,
-                groups=cardinality,
-                activate=True)
-            self.conv3 = resnext_conv1x1(
+                groups=cardinality)
+            self.conv3 = conv1x1_block(
                 in_channels=group_width,
                 out_channels=out_channels,
-                stride=1,
                 activate=False)
 
     def __call__(self, x):
@@ -72,7 +67,7 @@ class SENetBottleneck(Chain):
 
 class SENetUnit(Chain):
     """
-    SENet unit with residual connection.
+    SENet unit.
 
     Parameters:
     ----------
@@ -97,7 +92,6 @@ class SENetUnit(Chain):
                  bottleneck_width,
                  identity_conv3x3):
         super(SENetUnit, self).__init__()
-        self.use_se = True
         self.resize_identity = (in_channels != out_channels) or (stride != 1)
 
         with self.init_scope():
@@ -107,18 +101,16 @@ class SENetUnit(Chain):
                 stride=stride,
                 cardinality=cardinality,
                 bottleneck_width=bottleneck_width)
-            if self.use_se:
-                self.se = SEBlock(channels=out_channels)
+            self.se = SEBlock(channels=out_channels)
             if self.resize_identity:
                 if identity_conv3x3:
-                    self.identity_conv = resnext_conv3x3(
+                    self.identity_conv = conv3x3_block(
                         in_channels=in_channels,
                         out_channels=out_channels,
                         stride=stride,
-                        groups=1,
                         activate=False)
                 else:
-                    self.identity_conv = resnext_conv1x1(
+                    self.identity_conv = conv1x1_block(
                         in_channels=in_channels,
                         out_channels=out_channels,
                         stride=stride,
@@ -131,8 +123,7 @@ class SENetUnit(Chain):
         else:
             identity = x
         x = self.body(x)
-        if self.use_se:
-            x = self.se(x)
+        x = self.se(x)
         x = x + identity
         x = self.activ(x)
         return x
@@ -156,24 +147,16 @@ class SEInitBlock(Chain):
         mid_channels = out_channels // 2
 
         with self.init_scope():
-            self.conv1 = resnext_conv3x3(
+            self.conv1 = conv3x3_block(
                 in_channels=in_channels,
                 out_channels=mid_channels,
-                stride=2,
-                groups=1,
-                activate=True)
-            self.conv2 = resnext_conv3x3(
+                stride=2)
+            self.conv2 = conv3x3_block(
                 in_channels=mid_channels,
-                out_channels=mid_channels,
-                stride=1,
-                groups=1,
-                activate=True)
-            self.conv3 = resnext_conv3x3(
+                out_channels=mid_channels)
+            self.conv3 = conv3x3_block(
                 in_channels=mid_channels,
-                out_channels=out_channels,
-                stride=1,
-                groups=1,
-                activate=True)
+                out_channels=out_channels)
             self.pool = partial(
                 F.max_pooling_2d,
                 ksize=3,
@@ -244,20 +227,20 @@ class SENet(Chain):
                                 identity_conv3x3=identity_conv3x3))
                             in_channels = out_channels
                     setattr(self.features, "stage{}".format(i + 1), stage)
-                setattr(self.features, 'final_pool', partial(
+                setattr(self.features, "final_pool", partial(
                     F.average_pooling_2d,
                     ksize=7,
                     stride=1))
 
             self.output = SimpleSequential()
             with self.output.init_scope():
-                setattr(self.output, 'flatten', partial(
+                setattr(self.output, "flatten", partial(
                     F.reshape,
                     shape=(-1, in_channels)))
-                setattr(self.output, 'dropout', partial(
+                setattr(self.output, "dropout", partial(
                     F.dropout,
                     ratio=0.2))
-                setattr(self.output, 'fc', L.Linear(
+                setattr(self.output, "fc", L.Linear(
                     in_size=in_channels,
                     out_size=classes))
 
@@ -373,11 +356,11 @@ def _test():
 
     chainer.global_config.train = False
 
-    pretrained = True
+    pretrained = False
 
     models = [
-        # senet52,
-        # senet103,
+        senet52,
+        senet103,
         senet154,
     ]
 
@@ -386,9 +369,9 @@ def _test():
         net = model(pretrained=pretrained)
         weight_count = net.count_params()
         print("m={}, {}".format(model.__name__, weight_count))
-        assert (model != senet52 or weight_count == 44659416)  # 22623272
-        assert (model != senet103 or weight_count == 60963096)  # 38908456
-        assert (model != senet154 or weight_count == 115088984)  # 93018024
+        assert (model != senet52 or weight_count == 44659416)
+        assert (model != senet103 or weight_count == 60963096)
+        assert (model != senet154 or weight_count == 115088984)
 
         x = np.zeros((1, 3, 224, 224), np.float32)
         y = net(x)

@@ -8,13 +8,13 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 
 setup(
     name='kerascv',
-    version='0.0.7',
+    version='0.0.24',
     description='Image classification models for Keras',
     license='MIT',
     long_description=long_description,
     long_description_content_type='text/markdown',
     url='https://github.com/osmr/imgclsmob',
-    author='osmr',
+    author='Oleg Sémery',
     author_email='osemery@gmail.com',
     classifiers=[
         'Development Status :: 3 - Alpha',
@@ -24,8 +24,9 @@ setup(
         'Programming Language :: Python',
         'Topic :: Scientific/Engineering :: Image Recognition',
     ],
-    keywords='machine-learning deep-learning neuralnetwork image-classification imagenet keras keras-mxnet',
+    keywords='machine-learning deep-learning neuralnetwork image-classification imagenet keras keras-mxnet vgg resnet '
+             'resnext senet densenet darknet squeezenet squeezenext shufflenet menet mobilenent igcv3 mnasnet',
     packages=find_packages(exclude=['others', '*.others', 'others.*', '*.others.*']),
     include_package_data=True,
-    install_requires=['keras-mxnet'],
+    install_requires=['keras', 'h5py'],
 )

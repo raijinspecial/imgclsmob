@@ -1,9 +1,16 @@
+from .models.alexnet import *
+from .models.vgg import *
 from .models.resnet import *
 from .models.preresnet import *
 from .models.resnext import *
+from .models.seresnet import *
+from .models.sepreresnet import *
+from .models.seresnext import *
 from .models.senet import *
 from .models.densenet import *
 from .models.darknet import *
+from .models.darknet53 import *
+from .models.channelnet import *
 from .models.squeezenet import *
 from .models.squeezenext import *
 from .models.shufflenet import *
@@ -12,12 +19,28 @@ from .models.shufflenetv2b import *
 from .models.menet import *
 from .models.mobilenet import *
 from .models.mobilenetv2 import *
+from .models.igcv3 import *
 from .models.mnasnet import *
 
 __all__ = ['get_model', 'init_variables_from_state_dict']
 
 
 _models = {
+    'alexnet': alexnet,
+
+    'vgg11': vgg11,
+    'vgg13': vgg13,
+    'vgg16': vgg16,
+    'vgg19': vgg19,
+    'bn_vgg11': bn_vgg11,
+    'bn_vgg13': bn_vgg13,
+    'bn_vgg16': bn_vgg16,
+    'bn_vgg19': bn_vgg19,
+    'bn_vgg11b': bn_vgg11b,
+    'bn_vgg13b': bn_vgg13b,
+    'bn_vgg16b': bn_vgg16b,
+    'bn_vgg19b': bn_vgg19b,
+
     'resnet10': resnet10,
     'resnet12': resnet12,
     'resnet14': resnet14,
@@ -37,17 +60,6 @@ _models = {
     'resnet200': resnet200,
     'resnet200b': resnet200b,
 
-    'seresnet18': seresnet18,
-    'seresnet34': seresnet34,
-    'seresnet50': seresnet50,
-    'seresnet50b': seresnet50b,
-    'seresnet101': seresnet101,
-    'seresnet101b': seresnet101b,
-    'seresnet152': seresnet152,
-    'seresnet152b': seresnet152b,
-    'seresnet200': seresnet200,
-    'seresnet200b': seresnet200b,
-
     'preresnet10': preresnet10,
     'preresnet12': preresnet12,
     'preresnet14': preresnet14,
@@ -66,6 +78,22 @@ _models = {
     'preresnet152b': preresnet152b,
     'preresnet200': preresnet200,
     'preresnet200b': preresnet200b,
+    'preresnet269b': preresnet269b,
+
+    'resnext50_32x4d': resnext50_32x4d,
+    'resnext101_32x4d': resnext101_32x4d,
+    'resnext101_64x4d': resnext101_64x4d,
+
+    'seresnet18': seresnet18,
+    'seresnet34': seresnet34,
+    'seresnet50': seresnet50,
+    'seresnet50b': seresnet50b,
+    'seresnet101': seresnet101,
+    'seresnet101b': seresnet101b,
+    'seresnet152': seresnet152,
+    'seresnet152b': seresnet152b,
+    'seresnet200': seresnet200,
+    'seresnet200b': seresnet200b,
 
     'sepreresnet18': sepreresnet18,
     'sepreresnet34': sepreresnet34,
@@ -78,9 +106,6 @@ _models = {
     'sepreresnet200': sepreresnet200,
     'sepreresnet200b': sepreresnet200b,
 
-    'resnext50_32x4d': resnext50_32x4d,
-    'resnext101_32x4d': resnext101_32x4d,
-    'resnext101_64x4d': resnext101_64x4d,
     'seresnext50_32x4d': seresnext50_32x4d,
     'seresnext101_32x4d': seresnext101_32x4d,
     'seresnext101_64x4d': seresnext101_64x4d,
@@ -97,6 +122,9 @@ _models = {
     'darknet_ref': darknet_ref,
     'darknet_tiny': darknet_tiny,
     'darknet19': darknet19,
+    'darknet53': darknet53,
+
+    'channelnet': channelnet,
 
     'squeezenet_v1_0': squeezenet_v1_0,
     'squeezenet_v1_1': squeezenet_v1_1,
@@ -132,8 +160,6 @@ _models = {
     'shufflenetv2b_w1': shufflenetv2b_w1,
     'shufflenetv2b_w3d2': shufflenetv2b_w3d2,
     'shufflenetv2b_w2': shufflenetv2b_w2,
-    'shufflenetv2c_wd2': shufflenetv2c_wd2,
-    'shufflenetv2c_w1': shufflenetv2c_w1,
 
     'menet108_8x1_g3': menet108_8x1_g3,
     'menet128_8x1_g4': menet128_8x1_g4,
@@ -158,6 +184,11 @@ _models = {
     'mobilenetv2_w3d4': mobilenetv2_w3d4,
     'mobilenetv2_wd2': mobilenetv2_wd2,
     'mobilenetv2_wd4': mobilenetv2_wd4,
+
+    'igcv3_w1': igcv3_w1,
+    'igcv3_w3d4': igcv3_w3d4,
+    'igcv3_wd2': igcv3_wd2,
+    'igcv3_wd4': igcv3_wd4,
 
     'mnasnet': mnasnet,
 }

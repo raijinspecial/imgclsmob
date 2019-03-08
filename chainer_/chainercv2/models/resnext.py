@@ -1,12 +1,9 @@
 """
-    ResNeXt & SE-ResNeXt, implemented in Chainer.
-    Original papers:
-    - 'Aggregated Residual Transformations for Deep Neural Networks,' http://arxiv.org/abs/1611.05431.
-    - 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
+    ResNeXt, implemented in Chainer.
+    Original paper: 'Aggregated Residual Transformations for Deep Neural Networks,' http://arxiv.org/abs/1611.05431.
 """
 
-__all__ = ['ResNeXt', 'resnext50_32x4d', 'resnext101_32x4d', 'resnext101_64x4d', 'seresnext50_32x4d',
-           'seresnext101_32x4d', 'seresnext101_64x4d', 'resnext_conv3x3', 'resnext_conv1x1']
+__all__ = ['ResNeXt', 'resnext50_32x4d', 'resnext101_32x4d', 'resnext101_64x4d', 'ResNeXtBottleneck', 'ResNeXtUnit']
 
 import os
 import math
@@ -15,119 +12,8 @@ import chainer.links as L
 from chainer import Chain
 from functools import partial
 from chainer.serializers import load_npz
-from .common import SimpleSequential, SEBlock
-
-
-class ResNeXtConv(Chain):
-    """
-    ResNeXt specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    ksize : int or tuple/list of 2 int
-        Convolution window size.
-    stride : int or tuple/list of 2 int
-        Stride of the convolution.
-    pad : int or tuple/list of 2 int
-        Padding value for convolution layer.
-    groups : int
-        Number of groups.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels,
-                 ksize,
-                 stride,
-                 pad,
-                 groups,
-                 activate):
-        super(ResNeXtConv, self).__init__()
-        self.activate = activate
-
-        with self.init_scope():
-            self.conv = L.Convolution2D(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                ksize=ksize,
-                stride=stride,
-                pad=pad,
-                nobias=True,
-                groups=groups)
-            self.bn = L.BatchNormalization(size=out_channels)
-            if self.activate:
-                self.activ = F.relu
-
-    def __call__(self, x):
-        x = self.conv(x)
-        x = self.bn(x)
-        if self.activate:
-            x = self.activ(x)
-        return x
-
-
-def resnext_conv1x1(in_channels,
-                    out_channels,
-                    stride,
-                    activate):
-    """
-    1x1 version of the ResNeXt specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    stride : int or tuple/list of 2 int
-        Stride of the convolution.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    return ResNeXtConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        ksize=1,
-        stride=stride,
-        pad=0,
-        groups=1,
-        activate=activate)
-
-
-def resnext_conv3x3(in_channels,
-                    out_channels,
-                    stride,
-                    groups,
-                    activate):
-    """
-    3x3 version of the ResNeXt specific convolution block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    stride : int or tuple/list of 2 int
-        Stride of the convolution.
-    groups : int
-        Number of groups.
-    activate : bool
-        Whether activate the convolution block.
-    """
-    return ResNeXtConv(
-        in_channels=in_channels,
-        out_channels=out_channels,
-        ksize=3,
-        stride=stride,
-        pad=1,
-        groups=groups,
-        activate=activate)
+from .common import conv1x1_block, conv3x3_block, SimpleSequential
+from .resnet import ResInitBlock
 
 
 class ResNeXtBottleneck(Chain):
@@ -155,25 +41,21 @@ class ResNeXtBottleneck(Chain):
                  bottleneck_width):
         super(ResNeXtBottleneck, self).__init__()
         mid_channels = out_channels // 4
-        D = int(math.floor(mid_channels * (bottleneck_width / 64)))
+        D = int(math.floor(mid_channels * (bottleneck_width / 64.0)))
         group_width = cardinality * D
 
         with self.init_scope():
-            self.conv1 = resnext_conv1x1(
+            self.conv1 = conv1x1_block(
                 in_channels=in_channels,
-                out_channels=group_width,
-                stride=1,
-                activate=True)
-            self.conv2 = resnext_conv3x3(
+                out_channels=group_width)
+            self.conv2 = conv3x3_block(
                 in_channels=group_width,
                 out_channels=group_width,
                 stride=stride,
-                groups=cardinality,
-                activate=True)
-            self.conv3 = resnext_conv1x1(
+                groups=cardinality)
+            self.conv3 = conv1x1_block(
                 in_channels=group_width,
                 out_channels=out_channels,
-                stride=1,
                 activate=False)
 
     def __call__(self, x):
@@ -199,18 +81,14 @@ class ResNeXtUnit(Chain):
         Number of groups.
     bottleneck_width: int
         Width of bottleneck block.
-    use_se : bool
-        Whether to use SE block.
     """
     def __init__(self,
                  in_channels,
                  out_channels,
                  stride,
                  cardinality,
-                 bottleneck_width,
-                 use_se):
+                 bottleneck_width):
         super(ResNeXtUnit, self).__init__()
-        self.use_se = use_se
         self.resize_identity = (in_channels != out_channels) or (stride != 1)
 
         with self.init_scope():
@@ -220,10 +98,8 @@ class ResNeXtUnit(Chain):
                 stride=stride,
                 cardinality=cardinality,
                 bottleneck_width=bottleneck_width)
-            if self.use_se:
-                self.se = SEBlock(channels=out_channels)
             if self.resize_identity:
-                self.identity_conv = resnext_conv1x1(
+                self.identity_conv = conv1x1_block(
                     in_channels=in_channels,
                     out_channels=out_channels,
                     stride=stride,
@@ -236,54 +112,14 @@ class ResNeXtUnit(Chain):
         else:
             identity = x
         x = self.body(x)
-        if self.use_se:
-            x = self.se(x)
         x = x + identity
         x = self.activ(x)
-        return x
-
-
-class ResNeXtInitBlock(Chain):
-    """
-    ResNeXt specific initial block.
-
-    Parameters:
-    ----------
-    in_channels : int
-        Number of input channels.
-    out_channels : int
-        Number of output channels.
-    """
-    def __init__(self,
-                 in_channels,
-                 out_channels):
-        super(ResNeXtInitBlock, self).__init__()
-        with self.init_scope():
-            self.conv = ResNeXtConv(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                ksize=7,
-                stride=2,
-                pad=3,
-                groups=1,
-                activate=True)
-            self.pool = partial(
-                F.max_pooling_2d,
-                ksize=3,
-                stride=2,
-                pad=1,
-                cover_all=False)
-
-    def __call__(self, x):
-        x = self.conv(x)
-        x = self.pool(x)
         return x
 
 
 class ResNeXt(Chain):
     """
     ResNeXt model from 'Aggregated Residual Transformations for Deep Neural Networks,' http://arxiv.org/abs/1611.05431.
-    Also this class implements SE-ResNeXt from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
 
     Parameters:
     ----------
@@ -295,8 +131,6 @@ class ResNeXt(Chain):
         Number of groups.
     bottleneck_width: int
         Width of bottleneck block.
-    use_se : bool
-        Whether to use SE block.
     in_channels : int, default 3
         Number of input channels.
     in_size : tuple of two ints, default (224, 224)
@@ -309,7 +143,6 @@ class ResNeXt(Chain):
                  init_block_channels,
                  cardinality,
                  bottleneck_width,
-                 use_se,
                  in_channels=3,
                  in_size=(224, 224),
                  classes=1000):
@@ -320,7 +153,7 @@ class ResNeXt(Chain):
         with self.init_scope():
             self.features = SimpleSequential()
             with self.features.init_scope():
-                setattr(self.features, "init_block", ResNeXtInitBlock(
+                setattr(self.features, "init_block", ResInitBlock(
                     in_channels=in_channels,
                     out_channels=init_block_channels))
                 in_channels = init_block_channels
@@ -334,21 +167,20 @@ class ResNeXt(Chain):
                                 out_channels=out_channels,
                                 stride=stride,
                                 cardinality=cardinality,
-                                bottleneck_width=bottleneck_width,
-                                use_se=use_se))
+                                bottleneck_width=bottleneck_width))
                             in_channels = out_channels
                     setattr(self.features, "stage{}".format(i + 1), stage)
-                setattr(self.features, 'final_pool', partial(
+                setattr(self.features, "final_pool", partial(
                     F.average_pooling_2d,
                     ksize=7,
                     stride=1))
 
             self.output = SimpleSequential()
             with self.output.init_scope():
-                setattr(self.output, 'flatten', partial(
+                setattr(self.output, "flatten", partial(
                     F.reshape,
                     shape=(-1, in_channels)))
-                setattr(self.output, 'fc', L.Linear(
+                setattr(self.output, "fc", L.Linear(
                     in_size=in_channels,
                     out_size=classes))
 
@@ -361,13 +193,12 @@ class ResNeXt(Chain):
 def get_resnext(blocks,
                 cardinality,
                 bottleneck_width,
-                use_se=False,
                 model_name=None,
                 pretrained=False,
                 root=os.path.join('~', '.chainer', 'models'),
                 **kwargs):
     """
-    Create ResNeXt or SE-ResNeXt model with specific parameters.
+    Create ResNeXt model with specific parameters.
 
     Parameters:
     ----------
@@ -377,8 +208,6 @@ def get_resnext(blocks,
         Number of groups.
     bottleneck_width: int
         Width of bottleneck block.
-    use_se : bool
-        Whether to use SE block.
     model_name : str or None, default None
         Model name for loading pretrained model.
     pretrained : bool, default False
@@ -404,7 +233,6 @@ def get_resnext(blocks,
         init_block_channels=init_block_channels,
         cardinality=cardinality,
         bottleneck_width=bottleneck_width,
-        use_se=use_se,
         **kwargs)
 
     if pretrained:
@@ -465,66 +293,18 @@ def resnext101_64x4d(**kwargs):
     return get_resnext(blocks=101, cardinality=64, bottleneck_width=4, model_name="resnext101_64x4d", **kwargs)
 
 
-def seresnext50_32x4d(**kwargs):
-    """
-    SE-ResNeXt-50 (32x4d) model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.chainer/models'
-        Location for keeping the model parameters.
-    """
-    return get_resnext(blocks=50, cardinality=32, bottleneck_width=4, use_se=True, model_name="seresnext50_32x4d",
-                       **kwargs)
-
-
-def seresnext101_32x4d(**kwargs):
-    """
-    SE-ResNeXt-101 (32x4d) model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.chainer/models'
-        Location for keeping the model parameters.
-    """
-    return get_resnext(blocks=101, cardinality=32, bottleneck_width=4, use_se=True, model_name="seresnext101_32x4d",
-                       **kwargs)
-
-
-def seresnext101_64x4d(**kwargs):
-    """
-    SE-ResNeXt-101 (64x4d) model from 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
-
-    Parameters:
-    ----------
-    pretrained : bool, default False
-        Whether to load the pretrained weights for model.
-    root : str, default '~/.chainer/models'
-        Location for keeping the model parameters.
-    """
-    return get_resnext(blocks=101, cardinality=64, bottleneck_width=4, use_se=True, model_name="seresnext101_64x4d",
-                       **kwargs)
-
-
 def _test():
     import numpy as np
     import chainer
 
     chainer.global_config.train = False
 
-    pretrained = True
+    pretrained = False
 
     models = [
-        # resnext50_32x4d,
+        resnext50_32x4d,
         resnext101_32x4d,
         resnext101_64x4d,
-        seresnext50_32x4d,
-        seresnext101_32x4d,
-        # seresnext101_64x4d,
     ]
 
     for model in models:
@@ -535,9 +315,6 @@ def _test():
         assert (model != resnext50_32x4d or weight_count == 25028904)
         assert (model != resnext101_32x4d or weight_count == 44177704)
         assert (model != resnext101_64x4d or weight_count == 83455272)
-        assert (model != seresnext50_32x4d or weight_count == 27559896)
-        assert (model != seresnext101_32x4d or weight_count == 48955416)
-        assert (model != seresnext101_64x4d or weight_count == 88232984)
 
         x = np.zeros((1, 3, 224, 224), np.float32)
         y = net(x)

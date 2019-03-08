@@ -3,14 +3,13 @@
     Original paper: 'Squeeze-and-Excitation Networks,' https://arxiv.org/abs/1709.01507.
 """
 
-__all__ = ['SENet', 'senet52', 'senet103', 'senet154']
+__all__ = ['SENet', 'senet52', 'senet103', 'senet154', 'SEInitBlock']
 
 import os
 import math
 import torch.nn as nn
 import torch.nn.init as init
-from .common import SEBlock
-from .resnext import resnext_conv3x3, resnext_conv1x1
+from .common import conv1x1_block, conv3x3_block, SEBlock
 
 
 class SENetBottleneck(nn.Module):
@@ -38,25 +37,21 @@ class SENetBottleneck(nn.Module):
                  bottleneck_width):
         super(SENetBottleneck, self).__init__()
         mid_channels = out_channels // 4
-        D = int(math.floor(mid_channels * (bottleneck_width / 64)))
+        D = int(math.floor(mid_channels * (bottleneck_width / 64.0)))
         group_width = cardinality * D
         group_width2 = group_width // 2
 
-        self.conv1 = resnext_conv1x1(
+        self.conv1 = conv1x1_block(
             in_channels=in_channels,
-            out_channels=group_width2,
-            stride=1,
-            activate=True)
-        self.conv2 = resnext_conv3x3(
+            out_channels=group_width2)
+        self.conv2 = conv3x3_block(
             in_channels=group_width2,
             out_channels=group_width,
             stride=stride,
-            groups=cardinality,
-            activate=True)
-        self.conv3 = resnext_conv1x1(
+            groups=cardinality)
+        self.conv3 = conv1x1_block(
             in_channels=group_width,
             out_channels=out_channels,
-            stride=1,
             activate=False)
 
     def forward(self, x):
@@ -68,7 +63,7 @@ class SENetBottleneck(nn.Module):
 
 class SENetUnit(nn.Module):
     """
-    SENet unit with residual connection.
+    SENet unit.
 
     Parameters:
     ----------
@@ -93,7 +88,6 @@ class SENetUnit(nn.Module):
                  bottleneck_width,
                  identity_conv3x3):
         super(SENetUnit, self).__init__()
-        self.use_se = True
         self.resize_identity = (in_channels != out_channels) or (stride != 1)
 
         self.body = SENetBottleneck(
@@ -102,18 +96,16 @@ class SENetUnit(nn.Module):
             stride=stride,
             cardinality=cardinality,
             bottleneck_width=bottleneck_width)
-        if self.use_se:
-            self.se = SEBlock(channels=out_channels)
+        self.se = SEBlock(channels=out_channels)
         if self.resize_identity:
             if identity_conv3x3:
-                self.identity_conv = resnext_conv3x3(
+                self.identity_conv = conv3x3_block(
                     in_channels=in_channels,
                     out_channels=out_channels,
                     stride=stride,
-                    groups=1,
                     activate=False)
             else:
-                self.identity_conv = resnext_conv1x1(
+                self.identity_conv = conv1x1_block(
                     in_channels=in_channels,
                     out_channels=out_channels,
                     stride=stride,
@@ -126,8 +118,7 @@ class SENetUnit(nn.Module):
         else:
             identity = x
         x = self.body(x)
-        if self.use_se:
-            x = self.se(x)
+        x = self.se(x)
         x = x + identity
         x = self.activ(x)
         return x
@@ -150,24 +141,16 @@ class SEInitBlock(nn.Module):
         super(SEInitBlock, self).__init__()
         mid_channels = out_channels // 2
 
-        self.conv1 = resnext_conv3x3(
+        self.conv1 = conv3x3_block(
             in_channels=in_channels,
             out_channels=mid_channels,
-            stride=2,
-            groups=1,
-            activate=True)
-        self.conv2 = resnext_conv3x3(
+            stride=2)
+        self.conv2 = conv3x3_block(
             in_channels=mid_channels,
-            out_channels=mid_channels,
-            stride=1,
-            groups=1,
-            activate=True)
-        self.conv3 = resnext_conv3x3(
+            out_channels=mid_channels)
+        self.conv3 = conv3x3_block(
             in_channels=mid_channels,
-            out_channels=out_channels,
-            stride=1,
-            groups=1,
-            activate=True)
+            out_channels=out_channels)
         self.pool = nn.MaxPool2d(
             kernel_size=3,
             stride=2,
@@ -233,13 +216,13 @@ class SENet(nn.Module):
                     identity_conv3x3=identity_conv3x3))
                 in_channels = out_channels
             self.features.add_module("stage{}".format(i + 1), stage)
-        self.features.add_module('final_pool', nn.AvgPool2d(
+        self.features.add_module("final_pool", nn.AvgPool2d(
             kernel_size=7,
             stride=1))
 
         self.output = nn.Sequential()
-        self.output.add_module('dropout', nn.Dropout(p=0.2))
-        self.output.add_module('fc', nn.Linear(
+        self.output.add_module("dropout", nn.Dropout(p=0.2))
+        self.output.add_module("fc", nn.Linear(
             in_features=in_channels,
             out_features=num_classes))
 
@@ -358,16 +341,24 @@ def senet154(**kwargs):
     return get_senet(blocks=154, model_name="senet154", **kwargs)
 
 
-def _test():
+def _calc_width(net):
     import numpy as np
+    net_params = filter(lambda p: p.requires_grad, net.parameters())
+    weight_count = 0
+    for param in net_params:
+        weight_count += np.prod(param.size())
+    return weight_count
+
+
+def _test():
     import torch
     from torch.autograd import Variable
 
-    pretrained = True
+    pretrained = False
 
     models = [
-        # senet52,
-        # senet103,
+        senet52,
+        senet103,
         senet154,
     ]
 
@@ -375,15 +366,13 @@ def _test():
 
         net = model(pretrained=pretrained)
 
-        net.train()
-        net_params = filter(lambda p: p.requires_grad, net.parameters())
-        weight_count = 0
-        for param in net_params:
-            weight_count += np.prod(param.size())
-        # print("m={}, {}".format(model.__name__, weight_count))
-        assert (model != senet52 or weight_count == 44659416)  # 22623272
-        assert (model != senet103 or weight_count == 60963096)  # 38908456
-        assert (model != senet154 or weight_count == 115088984)  # 93018024
+        # net.train()
+        net.eval()
+        weight_count = _calc_width(net)
+        print("m={}, {}".format(model.__name__, weight_count))
+        assert (model != senet52 or weight_count == 44659416)
+        assert (model != senet103 or weight_count == 60963096)
+        assert (model != senet154 or weight_count == 115088984)
 
         x = Variable(torch.randn(1, 3, 224, 224))
         y = net(x)

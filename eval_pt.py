@@ -4,29 +4,26 @@ import logging
 
 from common.logger_utils import initialize_logging
 from pytorch.model_stats import measure_model
-from pytorch.utils import prepare_pt_context, prepare_model, get_data_loader, calc_net_weight_count, validate,\
-    AverageMeter
+from pytorch.imagenet1k import add_dataset_parser_arguments, get_val_data_loader
+from pytorch.utils import prepare_pt_context, prepare_model, calc_net_weight_count, validate, AverageMeter
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='Evaluate a model for image classification (PyTorch)',
+        description='Evaluate a model for image classification (PyTorch/ImageNet-1K)',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument(
-        '--data-dir',
-        type=str,
-        default='../imgclsmob_data/imagenet',
-        help='training and validation pictures to use.')
+
+    add_dataset_parser_arguments(parser)
 
     parser.add_argument(
         '--model',
         type=str,
         required=True,
-        help='type of model to use. see vision_model for options.')
+        help='type of model to use. see model_provider for options.')
     parser.add_argument(
         '--use-pretrained',
         action='store_true',
-        help='enable using pretrained model from gluon.')
+        help='enable using pretrained model from github.')
     parser.add_argument(
         '--resume',
         type=str,
@@ -37,17 +34,15 @@ def parse_args():
         dest='calc_flops',
         action='store_true',
         help='calculate FLOPs')
-
     parser.add_argument(
-        '--input-size',
-        type=int,
-        default=224,
-        help='size of the input for model. default is 224')
+        '--calc-flops-only',
+        dest='calc_flops_only',
+        action='store_true',
+        help='calculate FLOPs without quality estimation')
     parser.add_argument(
-        '--resize-inv-factor',
-        type=float,
-        default=0.875,
-        help='inverted ratio for input image crop. default is 0.875')
+        '--remove-module',
+        action='store_true',
+        help='enable if stored model has module')
 
     parser.add_argument(
         '--num-gpus',
@@ -97,34 +92,44 @@ def test(net,
          val_data,
          use_cuda,
          input_image_size,
+         in_channels,
          calc_weight_count=False,
          calc_flops=False,
+         calc_flops_only=True,
          extended_log=False):
-    acc_top1 = AverageMeter()
-    acc_top5 = AverageMeter()
+    if not calc_flops_only:
+        acc_top1 = AverageMeter()
+        acc_top5 = AverageMeter()
+        tic = time.time()
+        err_top1_val, err_top5_val = validate(
+            acc_top1=acc_top1,
+            acc_top5=acc_top5,
+            net=net,
+            val_data=val_data,
+            use_cuda=use_cuda)
+        if extended_log:
+            logging.info('Test: err-top1={top1:.4f} ({top1})\terr-top5={top5:.4f} ({top5})'.format(
+                top1=err_top1_val, top5=err_top5_val))
+        else:
+            logging.info('Test: err-top1={top1:.4f}\terr-top5={top5:.4f}'.format(
+                top1=err_top1_val, top5=err_top5_val))
+        logging.info('Time cost: {:.4f} sec'.format(
+            time.time() - tic))
 
-    tic = time.time()
-    err_top1_val, err_top5_val = validate(
-        acc_top1=acc_top1,
-        acc_top5=acc_top5,
-        net=net,
-        val_data=val_data,
-        use_cuda=use_cuda)
     if calc_weight_count:
         weight_count = calc_net_weight_count(net)
-        logging.info('Model: {} trainable parameters'.format(weight_count))
+        if not calc_flops:
+            logging.info('Model: {} trainable parameters'.format(weight_count))
     if calc_flops:
-        n_flops, n_params = measure_model(net, input_image_size, input_image_size)
-        logging.info('Params: {} ({:.2f}M), FLOPs: {} ({:.2f}M)'.format(
-            n_params, n_params / 1e6, n_flops, n_flops / 1e6))
-    if extended_log:
-        logging.info('Test: err-top1={top1:.4f} ({top1})\terr-top5={top5:.4f} ({top5})'.format(
-            top1=err_top1_val, top5=err_top5_val))
-    else:
-        logging.info('Test: err-top1={top1:.4f}\terr-top5={top5:.4f}'.format(
-            top1=err_top1_val, top5=err_top5_val))
-    logging.info('Time cost: {:.4f} sec'.format(
-        time.time() - tic))
+        num_flops, num_macs, num_params = measure_model(net, in_channels, input_image_size)
+        assert (not calc_weight_count) or (weight_count == num_params)
+        stat_msg = "Params: {params} ({params_m:.2f}M), FLOPs: {flops} ({flops_m:.2f}M)," \
+                   " FLOPs/2: {flops2} ({flops2_m:.2f}M), MACs: {macs} ({macs_m:.2f}M)"
+        logging.info(stat_msg.format(
+            params=num_params, params_m=num_params / 1e6,
+            flops=num_flops, flops_m=num_flops / 1e6,
+            flops2=num_flops / 2, flops2_m=num_flops / 2 / 1e6,
+            macs=num_macs, macs_m=num_macs / 1e6))
 
 
 def main():
@@ -145,28 +150,32 @@ def main():
         model_name=args.model,
         use_pretrained=args.use_pretrained,
         pretrained_model_file_path=args.resume.strip(),
-        use_cuda=use_cuda)
+        use_cuda=use_cuda,
+        remove_module=args.remove_module)
     if hasattr(net, 'module'):
         input_image_size = net.module.in_size[0] if hasattr(net.module, 'in_size') else args.input_size
     else:
         input_image_size = net.in_size[0] if hasattr(net, 'in_size') else args.input_size
 
-    train_data, val_data = get_data_loader(
+    val_data = get_val_data_loader(
         data_dir=args.data_dir,
         batch_size=batch_size,
         num_workers=args.num_workers,
         input_image_size=input_image_size,
-        resize_inv_factor=args.resize_inv_factor)
+        resize_inv_factor=args.resize_inv_factor,
+        use_cv_resize=args.use_cv_resize)
 
-    assert (args.use_pretrained or args.resume.strip())
+    assert (args.use_pretrained or args.resume.strip() or args.calc_flops_only)
     test(
         net=net,
         val_data=val_data,
         use_cuda=use_cuda,
         # calc_weight_count=(not log_file_exist),
-        input_image_size=input_image_size,
+        input_image_size=(input_image_size, input_image_size),
+        in_channels=args.in_channels,
         calc_weight_count=True,
         calc_flops=args.calc_flops,
+        calc_flops_only=args.calc_flops_only,
         extended_log=True)
 
 
